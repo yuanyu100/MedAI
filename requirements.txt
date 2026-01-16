@@ -1,0 +1,39 @@
+# 病床监护数据分析系统依赖
+
+# 核心框架
+langgraph>=1.2.0
+langchain>=0.2.0
+langchain-openai>=0.1.0
+langchain-core>=0.2.0
+langgraph-checkpoint-mysql>=1.2.0
+
+# Web框架
+fastapi>=0.115.0
+uvicorn>=0.30.0
+
+# 数据处理
+pandas>=2.2.0
+openpyxl>=3.1.0
+numpy>=1.26.0
+
+# 可视化和PDF生成
+matplotlib>=3.8.0
+reportlab>=4.2.0
+pypdf>=5.0.0
+
+# 数据库支持
+PyMySQL>=1.1.0
+sqlalchemy>=2.0.30
+aiomysql>=0.2.0
+
+# 工具库
+python-dotenv>=1.0.0
+pydantic>=2.8.0
+
+# Coze SDK
+coze-coding-dev-sdk>=0.5.0
+coze-coding-utils>=0.1.0
+
+# 其他常用库
+requests>=2.32.0
+tqdm>=4.66.0
