@@ -1,8 +1,6 @@
 import pandas as pd
 import json
 from datetime import datetime
-from langchain.tools import tool
-from langchain.tools import ToolRuntime
 
 
 def parse_data_content(content: str):
@@ -252,7 +250,7 @@ def format_response(category: str, info: dict) -> str:
 - 综合评估：{info['overall_status']}"""
 
 
-def qa_retrieve_internal(table_name: str = "device_data", question: str = "整体情况如何") -> str:
+def qa_retrieve_internal(table_name: str = "vital_signs", question: str = "整体情况如何") -> str:
     """
     内部检索函数
     """
@@ -261,7 +259,7 @@ def qa_retrieve_internal(table_name: str = "device_data", question: str = "整�
 
 
 @tool
-def qa_retriever(question: str = "整体情况如何", table_name: str = "device_data", runtime: ToolRuntime = None) -> str:
+def qa_retriever(question: str = "整体情况如何", table_name: str = "vital_signs", runtime: ToolRuntime = None) -> str:
     """
     病床监护数据问答检索工具（To C 专用）
 
@@ -269,7 +267,7 @@ def qa_retriever(question: str = "整体情况如何", table_name: str = "device
 
     Args:
         question: 用户的问题（自然语言字符串）
-        table_name: 数据库表名，默认为"device_data"
+        table_name: 数据库表名，默认为"vital_signs"
 
     Returns:
         与问题相关的数据片段，以简洁易懂的文本形式返回

@@ -1,7 +1,7 @@
 # 病床监护数据分析系统依赖
 
 # 核心框架
-langgraph>=1.2.0
+langgraph>=1.0.5
 langchain>=0.2.0
 langchain-openai>=0.1.0
 langchain-core>=0.2.0
@@ -33,6 +33,10 @@ pydantic>=2.8.0
 # Coze SDK
 coze-coding-dev-sdk>=0.5.0
 coze-coding-utils>=0.1.0
+
+# Ollama支持
+langchain-community>=0.2.0
+langchain-ollama>=0.2.0
 
 # 其他常用库
 requests>=2.32.0

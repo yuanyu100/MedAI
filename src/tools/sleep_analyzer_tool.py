@@ -1,100 +1,29 @@
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta, time
-from langchain.tools import tool
-from langchain.tools import ToolRuntime
-import os
 import json
 import logging
+from typing import Dict, List, Tuple, Optional
+import warnings
+from langchain.tools import tool, ToolRuntime
+warnings.filterwarnings('ignore')
 
 # 配置日志
-import sys
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout),  # 输出到控制台
-        logging.FileHandler('sleep_analyzer.log', encoding='utf-8')  # 同时输出到文件
-    ]
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.DEBUG)  # 确保日志级别为DEBUG
 
 
-def analyze_single_day_sleep_data(date_str: str, table_name: str = "device_data"):
+def get_stage_label(stage_value):
     """
-    分析单日睡眠数据
-    
-    Args:
-        date_str: 日期字符串，格式如 '2024-12-20'
-        table_name: 数据库表名，默认为 "device_data"
-    
-    Returns:
-        JSON格式的睡眠分析结果
+    根据阶段值返回对应的标签
     """
-    try:
-        
-        # 使用新的数据库管理器
-        from src.db.database import get_db_manager
-        db_manager = get_db_manager()
-        
-        # 查询指定日期及前一天的数据（因为睡眠可能跨天）
-        target_date = datetime.strptime(date_str, '%Y-%m-%d')
-        prev_date = target_date - timedelta(days=1)
-        
-        logger.info(f"查询日期范围: {prev_date.strftime('%Y-%m-%d')} 到 {target_date.strftime('%Y-%m-%d')}")
-        
-        # 使用数据库管理器查询数据
-        df = db_manager.get_sleep_data_for_date_range(
-            table_name,
-            prev_date.strftime('%Y-%m-%d'), 
-            target_date.strftime('%Y-%m-%d')
-        )
-        
-        logger.info(f"查询到 {len(df)} 条数据")
-        
-        if df.empty:
-            logger.warning(f"数据库中没有找到 {date_str} 及前一天的数据")
-            return json.dumps({
-                "error": f"数据库中没有找到 {date_str} 及前一天的数据",
-                "date": date_str
-            }, ensure_ascii=False, indent=2)
-        
-        # 转换时间列为datetime格式
-        df['upload_time'] = pd.to_datetime(df['upload_time'])
-        
-        # 分析睡眠数据
-        result = analyze_sleep_metrics(df, date_str)
-        
-        # 将numpy/pandas类型转换为原生Python类型以支持JSON序列化
-        result = convert_numpy_types(result)
-        
-        logger.info(f"睡眠分析完成，结果: {result.get('bedtime', 'N/A')} 到 {result.get('wakeup_time', 'N/A')}")
-        print(f"睡眠分析完成，结果: {result.get('bedtime', 'N/A')} 到 {result.get('wakeup_time', 'N/A')}")
-        
-        # 添加最终结果的详细输出
-        if 'bedtime' in result and 'wakeup_time' in result:
-            print(f"最终就寝时间: {result['bedtime']}")
-            print(f"最终起床时间: {result['wakeup_time']}")
-            print(f"卧床时间: {result.get('time_in_bed_minutes', 'N/A')} 分钟")
-            print(f"睡眠时长: {result.get('sleep_duration_minutes', 'N/A')} 分钟")
-            
-            # 计算时间差
-            try:
-                bedtime_dt = datetime.strptime(result['bedtime'], '%Y-%m-%d %H:%M:%S')
-                wakeup_dt = datetime.strptime(result['wakeup_time'], '%Y-%m-%d %H:%M:%S')
-                time_diff = wakeup_dt - bedtime_dt
-                print(f"时间差: {time_diff}")
-            except Exception as e:
-                print(f"计算时间差时出错: {e}")
-        
-        return json.dumps(result, ensure_ascii=False, indent=2)
-        
-    except Exception as e:
-        import traceback
-        error_msg = f"单日睡眠分析失败: {str(e)}\n{traceback.format_exc()}"
-        logger.error(error_msg)
-        return json.dumps({"error": error_msg}, ensure_ascii=False, indent=2)
+    stage_labels = {
+        1: "深睡",
+        2: "浅睡", 
+        3: "快速眼动",
+        4: "清醒"
+    }
+    return stage_labels.get(stage_value, "未知")
 
 
 def convert_numpy_types(obj):
@@ -279,6 +208,177 @@ def find_valid_sleep_segments(data):
     return segments
 
 
+def analyze_single_day_sleep_data(date_str: str, table_name: str = "vital_signs"):
+    """
+    分析单日睡眠数据
+    时间范围：前一天晚上8点到当天早上10点
+    
+    Args:
+        date_str: 日期字符串，格式如 '2024-12-20'
+        table_name: 数据库表名，默认为 "vital_signs"
+    
+    Returns:
+        JSON格式的睡眠分析结果
+    """
+    try:
+        
+        # 使用新的数据库管理器
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        
+        # 使用新的时间范围：前一天晚上8点到当天早上10点
+        df = db_manager.get_sleep_data_for_date_range_and_time(
+            table_name,
+            date_str,
+            start_hour=20,  # 晚上8点
+            end_hour=10     # 早上10点
+        )
+        
+        logger.info(f"查询到 {len(df)} 条数据")
+        
+        if df.empty:
+            logger.warning(f"数据库中没有找到 {date_str} 期间的睡眠数据")
+            # 返回格式一致但数据为0的结果
+            from src.utils.response_handler import SleepAnalysisResponse
+            response = SleepAnalysisResponse(
+                success=True,
+                date=date_str,
+                bedtime=f"{date_str} 00:00:00",
+                wakeup_time=f"{date_str} 00:00:00",
+                time_in_bed_minutes=0,
+                sleep_duration_minutes=0,
+                sleep_score=0,
+                bed_exit_count=0,
+                sleep_prep_time_minutes=0,
+                sleep_phases={
+                    "deep_sleep_minutes": 0,
+                    "light_sleep_minutes": 0,
+                    "rem_sleep_minutes": 0,
+                    "awake_minutes": 0,
+                    "deep_sleep_percentage": 0,
+                    "light_sleep_percentage": 0,
+                    "rem_sleep_percentage": 0,
+                    "awake_percentage": 0
+                },
+                sleep_stage_segments=[],
+                average_metrics={
+                    "avg_heart_rate": 0,
+                    "avg_respiratory_rate": 0,
+                    "avg_body_moves_ratio": 0,
+                    "avg_heartbeat_interval": 0,
+                    "avg_rms_heartbeat_interval": 0
+                },
+                summary="暂无数据",
+                message=f"在{date_str}期间没有找到睡眠数据"
+            )
+            return response.to_json()
+        
+        # 转换时间列为datetime格式
+        df['upload_time'] = pd.to_datetime(df['upload_time'])
+        
+        # 分析睡眠数据
+        result = analyze_sleep_metrics(df, date_str)
+        
+        # 将numpy/pandas类型转换为原生Python类型以支持JSON序列化
+        result = convert_numpy_types(result)
+        
+        logger.info(f"睡眠分析完成，结果: {result.get('bedtime', 'N/A')} 到 {result.get('wakeup_time', 'N/A')}")
+        print(f"睡眠分析完成，结果: {result.get('bedtime', 'N/A')} 到 {result.get('wakeup_time', 'N/A')}")
+        
+        # 添加最终结果的详细输出
+        if 'bedtime' in result and 'wakeup_time' in result:
+            print(f"最终就寝时间: {result['bedtime']}")
+            print(f"最终起床时间: {result['wakeup_time']}")
+            print(f"卧床时间: {result.get('time_in_bed_minutes', 'N/A')} 分钟")
+            print(f"睡眠时长: {result.get('sleep_duration_minutes', 'N/A')} 分钟")
+            
+            # 计算时间差
+            try:
+                bedtime_dt = datetime.strptime(result['bedtime'], '%Y-%m-%d %H:%M:%S')
+                wakeup_dt = datetime.strptime(result['wakeup_time'], '%Y-%m-%d %H:%M:%S')
+                time_diff = wakeup_dt - bedtime_dt
+                print(f"时间差: {time_diff}")
+            except Exception as e:
+                print(f"计算时间差时出错: {e}")
+        
+        # 使用SleepAnalysisResponse类包装结果
+        from src.utils.response_handler import SleepAnalysisResponse
+        response = SleepAnalysisResponse(
+            success=True,
+            date=result.get('date', date_str),
+            bedtime=result.get('bedtime', f"{date_str} 00:00:00"),
+            wakeup_time=result.get('wakeup_time', f"{date_str} 00:00:00"),
+            time_in_bed_minutes=result.get('time_in_bed_minutes', 0),
+            sleep_duration_minutes=result.get('sleep_duration_minutes', 0),
+            sleep_score=result.get('sleep_score', 0),
+            bed_exit_count=result.get('bed_exit_count', 0),
+            sleep_prep_time_minutes=result.get('sleep_prep_time_minutes', 0),
+            sleep_phases=result.get('sleep_phases', {
+                "deep_sleep_minutes": 0,
+                "light_sleep_minutes": 0,
+                "rem_sleep_minutes": 0,
+                "awake_minutes": 0,
+                "deep_sleep_percentage": 0,
+                "light_sleep_percentage": 0,
+                "rem_sleep_percentage": 0,
+                "awake_percentage": 0
+            }),
+            sleep_stage_segments=result.get('sleep_stage_segments', []),
+            average_metrics=result.get('average_metrics', {
+                "avg_heart_rate": 0,
+                "avg_respiratory_rate": 0,
+                "avg_body_moves_ratio": 0,
+                "avg_heartbeat_interval": 0,
+                "avg_rms_heartbeat_interval": 0
+            }),
+            summary=result.get('summary', '分析完成')
+        )
+        return response.to_json()
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"单日睡眠分析失败: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        
+        from src.utils.response_handler import ApiResponse
+        # 返回错误格式但保持一致的结构
+        response = ApiResponse.error(
+            error=str(e),
+            message="睡眠分析失败",
+            data={
+                "date": date_str,
+                "bedtime": f"{date_str} 00:00:00",
+                "wakeup_time": f"{date_str} 00:00:00",
+                "time_in_bed_minutes": 0,
+                "sleep_duration_minutes": 0,
+                "sleep_score": 0,
+                "bed_exit_count": 0,
+                "sleep_prep_time_minutes": 0,
+                "sleep_phases": {
+                    "deep_sleep_minutes": 0,
+                    "light_sleep_minutes": 0,
+                    "rem_sleep_minutes": 0,
+                    "awake_minutes": 0,
+                    "deep_sleep_percentage": 0,
+                    "light_sleep_percentage": 0,
+                    "rem_sleep_percentage": 0,
+                    "awake_percentage": 0
+                },
+                "sleep_stage_segments": [],
+                "average_metrics": {
+                    "avg_heart_rate": 0,
+                    "avg_respiratory_rate": 0,
+                    "avg_body_moves_ratio": 0,
+                    "avg_heartbeat_interval": 0,
+                    "avg_rms_heartbeat_interval": 0
+                },
+                "summary": "分析失败",
+                "error": str(e)
+            }
+        )
+        return response.to_json()
+
+
 def analyze_sleep_metrics(df, date_str):
     """
     分析睡眠指标
@@ -296,7 +396,7 @@ def analyze_sleep_metrics(df, date_str):
     # 转换数值列
     numeric_columns = [
         'heart_rate', 'respiratory_rate', 'avg_heartbeat_interval', 
-        'rms_heartbeat_interval', 'std_heartbeat_interval', 'arrhymia_ratio', 'body_moves_ratio'
+        'rms_heartbeat_interval', 'std_heartbeat_interval', 'arrhythmia_ratio', 'body_moves_ratio'
     ]
     
     for col in numeric_columns:
@@ -306,12 +406,9 @@ def analyze_sleep_metrics(df, date_str):
             df[col] = pd.to_numeric(df[col], errors='coerce')
     
     # 数据预处理逻辑
-    # 1. 仅保留“数据类型 = 周期数据”的记录（假设所有记录都是周期数据）
+    # 1. 仅保留"数据类型 = 周期数据"的记录（假设所有记录都是周期数据）
     # 2. 筛选有效数据：heart_rate∈[40,100]、respiratory_rate∈[12,20]
     print(f"原始数据量: {len(df)}")
-    df = df[(df['heart_rate'] >= 40) & (df['heart_rate'] <= 100) & 
-           (df['respiratory_rate'] >= 12) & (df['respiratory_rate'] <= 20)]
-    print(f"筛选后有效数据量: {len(df)}")
     
     # 移除无效数据
     df = df.dropna(subset=['heart_rate', 'respiratory_rate']).sort_values('upload_time')
@@ -344,8 +441,11 @@ def analyze_sleep_metrics(df, date_str):
     
     # 无效时段标记：连续≥15 分钟 "heart_rate=0" 的记录标记为 "离床 / 未监测时段"
     combined_data = combined_data.copy()
-    # 标记离床时段
-    combined_data['is_off_bed'] = (combined_data['heart_rate'] == 0) | (combined_data['heart_rate'].isna())
+    # 标记离床时段 - 优先使用is_person字段，如果没有则使用heart_rate
+    if 'is_person' in combined_data.columns:
+        combined_data['is_off_bed'] = (combined_data['is_person'] == 0)
+    else:
+        combined_data['is_off_bed'] = (combined_data['heart_rate'] == 0) | (combined_data['heart_rate'].isna())
     
     # 定义夜间时间段（晚上20:00到次日上午10:00），用于查找睡眠周期
     night_start = pd.Timestamp.combine(prev_date.date(), pd.Timestamp('20:00').time())
@@ -396,8 +496,6 @@ def analyze_sleep_metrics(df, date_str):
     # logger.info(f"Sleep period data: {sleep_period_data}")
     # print("Sleep period data print:", sleep_period_data)
     if not sleep_period_data.empty:
-        # 重新计算睡眠状态，使用更精确的逻辑
-        sleep_period_data = sleep_period_data.copy()
         
         # 使用心率和呼吸率来判断睡眠状态
         sleep_period_data['is_sleeping'] = (
@@ -412,30 +510,23 @@ def analyze_sleep_metrics(df, date_str):
         sleep_duration_minutes = 0
         
         # 确保数据按时间排序
-        sleep_period_data = sleep_period_data.sort_values('upload_time')
+        sleep_period_data = sleep_period_data.sort_values('upload_time').reset_index(drop=True)
         
         if len(sleep_period_data) > 1:
-            # 找到所有连续的睡眠片段并计算其总时长
-            sleeping_intervals = []
-            current_sleep_start = None
+            # 向量化计算连续睡眠片段（核心优化：替代iterrows）
+            # 1. 标记睡眠状态的变化
+            sleep_period_data['sleep_change'] = sleep_period_data['is_sleeping'].ne(sleep_period_data['is_sleeping'].shift())
+            # 2. 为每个连续片段分配ID
+            sleep_period_data['segment_id'] = sleep_period_data['sleep_change'].cumsum()
+            # 3. 按片段分组计算时长
+            sleep_segments = sleep_period_data[sleep_period_data['is_sleeping']].groupby('segment_id').agg({
+                'upload_time': ['min', 'max']
+            }).reset_index()
             
-            for idx, row in sleep_period_data.iterrows():
-                if row['is_sleeping']:
-                    if current_sleep_start is None:
-                        current_sleep_start = row['upload_time']
-                else:
-                    if current_sleep_start is not None:
-                        # 结束当前睡眠片段
-                        sleeping_intervals.append(row['upload_time'] - current_sleep_start)
-                        current_sleep_start = None
-            
-            # 如果最后仍在睡眠状态
-            if current_sleep_start is not None:
-                sleeping_intervals.append(sleep_period_data.iloc[-1]['upload_time'] - current_sleep_start)
-            
-            # 累加所有睡眠片段的时长
-            for interval in sleeping_intervals:
-                sleep_duration_minutes += interval.total_seconds() / 60
+            # 4. 计算每个睡眠片段的时长并累加
+            if not sleep_segments.empty:
+                sleep_segments['duration'] = (sleep_segments['upload_time']['max'] - sleep_segments['upload_time']['min']).dt.total_seconds() / 60
+                sleep_duration_minutes = sleep_segments['duration'].sum()
         else:
             # 如果只有一条记录，检查它是否在睡眠状态
             if len(sleep_period_data) == 1 and sleep_period_data.iloc[0]['is_sleeping']:
@@ -444,78 +535,81 @@ def analyze_sleep_metrics(df, date_str):
     else:
         sleep_duration_minutes = 0
 
-    # 计算离床次数（从睡眠状态转为非睡眠状态的次数）
+    # 计算离床次数（根据is_person字段判断）
     if not sleep_period_data.empty and len(sleep_period_data) > 1:
-        # 使用原始的离床逻辑：heart_rate=0持续>=15分钟
-        off_bed_threshold_minutes = 15
-        off_bed_events = 0
+        # 使用is_person字段来判断离床次数：从1变为0再变为1算一次离床
+        bed_exit_threshold_minutes = 1  # 离床时长阈值改为1分钟
         
-        # 检查是否有连续的离床时段
-        is_currently_off_bed = False
-        off_bed_start_time = None
+        # 提前检查列是否存在（只查一次）
+        if 'is_person' in sleep_period_data.columns:
+            sleep_period_data['is_off_bed'] = (sleep_period_data['is_person'] == 0)
+        else:
+            sleep_period_data['is_off_bed'] = (sleep_period_data['heart_rate'] == 0)
         
-        for idx, row in sleep_period_data.iterrows():
-            if row['heart_rate'] == 0:
-                if not is_currently_off_bed:
-                    # 开始离床
-                    off_bed_start_time = row['upload_time']
-                    is_currently_off_bed = True
-            else:
-                if is_currently_off_bed:
-                    # 结束离床时段
-                    off_bed_duration = row['upload_time'] - off_bed_start_time
-                    if off_bed_duration.total_seconds() >= off_bed_threshold_minutes * 60:
-                        off_bed_events += 1
-                    is_currently_off_bed = False
+        # 向量化标记离床状态变化
+        sleep_period_data['off_bed_change'] = sleep_period_data['is_off_bed'].ne(sleep_period_data['is_off_bed'].shift())
+        sleep_period_data['off_bed_segment_id'] = sleep_period_data['off_bed_change'].cumsum()
         
-        # 检查最后是否还有未结束的离床时段
-        if is_currently_off_bed:
-            last_duration = sleep_period_data.iloc[-1]['upload_time'] - off_bed_start_time
-            if last_duration.total_seconds() >= off_bed_threshold_minutes * 60:
-                off_bed_events += 1
-                
-        bed_exit_count = off_bed_events
+        # 按离床片段分组计算时长
+        off_bed_segments = sleep_period_data[sleep_period_data['is_off_bed']].groupby('off_bed_segment_id').agg({
+            'upload_time': ['min', 'max']
+        }).reset_index()
+        
+        # 计算满足阈值的离床次数
+        bed_exit_count = 0
+        if not off_bed_segments.empty:
+            off_bed_segments['duration'] = (off_bed_segments['upload_time']['max'] - off_bed_segments['upload_time']['min']).dt.total_seconds() / 60
+            bed_exit_count = (off_bed_segments['duration'] >= bed_exit_threshold_minutes).sum()
     else:
         bed_exit_count = 0
 
-    # 计算睡眠准备时间（从上床到真正入睡的时间）
+    # 计算睡眠准备时间（从上床到真正入睡的时间）- 优化逻辑避免0分钟情况
     if not sleep_period_data.empty:
         # 稳定睡眠判定：连续 5 条有效数据满足 "heart_rate 波动≤8 次 / 分 + arrhymia_ratio≤30%"
-        stable_sleep_start = None
         stable_records_needed = 5
         
-        for i in range(len(sleep_period_data) - stable_records_needed + 1):
-            subset = sleep_period_data.iloc[i:i+stable_records_needed]
-            
-            # 检查是否满足稳定睡眠条件
-            heart_rate_stable = subset['heart_rate'].std() <= 8 if len(subset['heart_rate']) > 1 else True
-            avg_arrhymia_ratio = subset['arrhymia_ratio'].mean() if 'arrhymia_ratio' in subset.columns else 100
-            arrhythmia_low = avg_arrhymia_ratio <= 30
-            
-            if heart_rate_stable and arrhythmia_low:
-                stable_sleep_start = subset.iloc[0]['upload_time']
-                break
+        # 使用滑动窗口计算心率标准差（向量化替代嵌套循环）
+        sleep_period_data['hr_std_5'] = sleep_period_data['heart_rate'].rolling(window=stable_records_needed).std()
         
-        if stable_sleep_start:
-            sleep_prep_time = (stable_sleep_start - bedtime).total_seconds() / 60
+        # 滑动窗口计算心律失常均值（如果列存在）
+        if 'arrhythmia_ratio' in sleep_period_data.columns:
+            sleep_period_data['arrhythmia_avg_5'] = sleep_period_data['arrhythmia_ratio'].rolling(window=stable_records_needed).mean()
         else:
-            sleep_prep_time = 0
+            sleep_period_data['arrhythmia_avg_5'] = 100  # 无数据默认不满足
+        
+        # 找到第一个满足稳定睡眠的位置
+        stable_mask = (sleep_period_data['hr_std_5'] <= 8) & (sleep_period_data['arrhythmia_avg_5'] <= 30)
+        stable_indices = sleep_period_data[stable_mask].index
+        
+        if not stable_indices.empty:
+            first_stable_idx = stable_indices[0]
+            stable_sleep_start = sleep_period_data.loc[first_stable_idx, 'upload_time']
+            sleep_prep_time = (stable_sleep_start - bedtime).total_seconds() / 60
+            # 确保最小值
+            sleep_prep_time = max(sleep_prep_time, 5)
+        else:
+            # 如果没有找到稳定的睡眠开始时间，使用默认值
+            sleep_prep_time = 10  # 默认10分钟准备时间
     else:
-        sleep_prep_time = 0
+        sleep_prep_time = 10  # 默认10分钟准备时间
 
-    # 计算平均生理指标
-    period_data = df[(df['upload_time'] >= bedtime) & (df['upload_time'] <= wakeup_time)]
-    avg_heart_rate = period_data['heart_rate'].mean()
-    avg_respiratory_rate = period_data['respiratory_rate'].mean()
-    avg_body_moves = period_data['body_moves_ratio'].mean() if 'body_moves_ratio' in period_data.columns else 0
+    # 计算平均生理指标（复用已筛选数据）
+    if not sleep_period_data.empty:
+        avg_heart_rate = sleep_period_data['heart_rate'].mean()
+        avg_respiratory_rate = sleep_period_data['respiratory_rate'].mean()
+        avg_body_moves = sleep_period_data['body_moves_ratio'].mean() if 'body_moves_ratio' in sleep_period_data.columns else 0
+    else:
+        avg_heart_rate = 0
+        avg_respiratory_rate = 0
+        avg_body_moves = 0
 
     # 分析睡眠阶段（基于您提供的精确标准）
     # 先计算用户的清醒静息基线
-    if not period_data.empty:
+    if not sleep_period_data.empty:
         # 计算清醒时的基线心率和呼吸频率（取较高值作为基线参考）
         # 假设心率>70或体动>20的情况为清醒状态
-        awake_data = period_data[
-            (period_data['heart_rate'] > 70) | (period_data['body_moves_ratio'] > 20)
+        awake_data = sleep_period_data[
+            (sleep_period_data['heart_rate'] > 70) | (sleep_period_data['body_moves_ratio'] > 20)
         ]
         
         if not awake_data.empty:
@@ -523,8 +617,8 @@ def analyze_sleep_metrics(df, date_str):
             baseline_respiratory_rate = awake_data['respiratory_rate'].mean()
         else:
             # 如果没有明显的清醒数据，使用总体平均值
-            baseline_heart_rate = period_data['heart_rate'].mean()
-            baseline_respiratory_rate = period_data['respiratory_rate'].mean()
+            baseline_heart_rate = sleep_period_data['heart_rate'].mean()
+            baseline_respiratory_rate = sleep_period_data['respiratory_rate'].mean()
     else:
         baseline_heart_rate = 70
         baseline_respiratory_rate = 16
@@ -535,132 +629,119 @@ def analyze_sleep_metrics(df, date_str):
     light_sleep_duration = 0
     awake_duration = 0
     
-    if not period_data.empty:
-        # 筛选睡眠时段（有效数据且在睡眠期间）
-        sleep_data = period_data[
-            (period_data['heart_rate'] >= 40) & 
-            (period_data['heart_rate'] <= 100) &
-            (period_data['respiratory_rate'] >= 8) &  # 扩展呼吸频率范围以包含深睡和REM
-            (period_data['respiratory_rate'] <= 25)   # 扩展呼吸频率范围以包含REM
+    # 新增：存储睡眠阶段时间段数据
+    sleep_stage_segments = []
+    
+    # 使用之前已筛选的sleep_period_data，而不是再次筛选period_data
+    if not sleep_period_data.empty:
+        sleep_data = sleep_period_data[
+            (sleep_period_data['heart_rate'] >= 40) & 
+            (sleep_period_data['heart_rate'] <= 100) &
+            (sleep_period_data['respiratory_rate'] >= 8) &  # 扩展呼吸频率范围以包含深睡和REM
+            (sleep_period_data['respiratory_rate'] <= 25)   # 扩展呼吸频率范围以包含REM
         ].copy()
         
         if not sleep_data.empty:
-            sleep_data = sleep_data.sort_values('upload_time')
+            sleep_data = sleep_data.sort_values('upload_time').reset_index(drop=True)
             
-            # 计算相邻时间点之间的时间间隔
-            time_intervals = []
-            for i in range(len(sleep_data) - 1):
-                current_time = sleep_data.iloc[i]['upload_time']
-                next_time = sleep_data.iloc[i + 1]['upload_time']
-                interval_minutes = (next_time - current_time).total_seconds() / 60
-                time_intervals.append(max(1, interval_minutes))  # 最小间隔为1分钟
+            # 向量化计算时间间隔（替代循环）
+            time_diffs = sleep_data['upload_time'].diff().dt.total_seconds() / 60
+            time_intervals = time_diffs.fillna(0).clip(lower=1)  # 最小间隔为1分钟
+            time_intervals.iloc[0] = time_intervals.iloc[1] if len(time_intervals) > 1 else 1  # 第一个值设为第二个值，如果只有一个数据点则设为1
             
-            if len(time_intervals) > 0:
-                time_intervals.append(time_intervals[-1])  # 为最后一个数据点使用相同的时间间隔
-            else:
-                time_intervals.append(1)  # 如果只有一个数据点，使用1分钟作为间隔
+            # 计算呼吸稳定性（完全向量化）
+            # 使用滚动窗口计算呼吸稳定性，避免逐行循环
+            window_size = 5  # 使用5个数据点的窗口
+            rolling_stats = sleep_data['respiratory_rate'].rolling(window=window_size, center=True, min_periods=1)
+            rr_std = rolling_stats.std()
+            rr_mean = rolling_stats.mean()
+            sleep_data['respiratory_stability'] = (
+                (rr_std / rr_mean * 100)
+                .where(rr_mean != 0, 0)  # 避免除零错误
+            ).fillna(0)
             
-            # 检查每个时间点属于哪种睡眠阶段
-            for idx, (index, row) in enumerate(sleep_data.iterrows()):
-                time_interval = time_intervals[idx] if idx < len(time_intervals) else 1
+            # 优化睡眠阶段判定逻辑
+            sleep_data = calculate_optimized_sleep_stages(sleep_data, baseline_heart_rate)
+            
+            # 按优先级分配阶段
+            # 1. 清醒（最高优先级）
+            awake_mask = sleep_data['is_awake_continuous']
+            sleep_data.loc[awake_mask, ['stage_value', 'stage_label']] = [4, "清醒"]
+            
+            # 2. 深睡（次高）
+            deep_mask = (~awake_mask) & sleep_data['is_deep_continuous']
+            sleep_data.loc[deep_mask, ['stage_value', 'stage_label']] = [1, "深睡"]
+            
+            # 3. REM（第三优先级）
+            rem_mask = (~awake_mask) & (~deep_mask) & sleep_data['is_rem_continuous']
+            sleep_data.loc[rem_mask, ['stage_value', 'stage_label']] = [3, "快速眼动"]
+            
+            # 4. 浅睡（默认，其余情况）
+            light_mask = (~awake_mask) & (~deep_mask) & (~rem_mask)
+            sleep_data.loc[light_mask, ['stage_value', 'stage_label']] = [2, "浅睡"]
+            
+            # 计算各阶段时长
+            awake_mask = sleep_data['stage_value'] == 4
+            deep_mask = sleep_data['stage_value'] == 1
+            rem_mask = sleep_data['stage_value'] == 3
+            light_mask = sleep_data['stage_value'] == 2
+            
+            awake_duration = time_intervals[awake_mask].sum() if awake_mask.any() else 0
+            deep_sleep_duration = time_intervals[deep_mask].sum() if deep_mask.any() else 0
+            rem_sleep_duration = time_intervals[rem_mask].sum() if rem_mask.any() else 0
+            light_sleep_duration = time_intervals[light_mask].sum() if light_mask.any() else 0
+            
+            # 保存阶段序列用于后续处理（向量化）
+            stages_sequence = [
+                {
+                    'stage_value': int(row['stage_value']),
+                    'stage_label': row['stage_label'],
+                    'time': row['upload_time'],
+                    'time_interval': time_intervals.iloc[idx] if idx < len(time_intervals) else 1
+                }
+                for idx, row in sleep_data.iterrows()
+            ]
+            
+            # 应用平滑处理以减少碎片化
+            smoothed_stages = smooth_sleep_stages(stages_sequence, min_duration_threshold=3)
+            logger.debug(f"Smoothed sleep stages: {smoothed_stages}")
+            # 计算平滑后的阶段时长和生成时间段数据
+            current_stage = None
+            current_stage_start_time = None
+            current_stage_duration = 0
+            
+            for stage_info in smoothed_stages:
+                stage_value = stage_info['stage_value']
+                stage_label = stage_info['stage_label']
+                time_interval = stage_info['time_interval']
                 
-                # 检查是否为清醒状态
-                is_awake = (
-                    row['heart_rate'] >= baseline_heart_rate * 0.95 or  # 心率接近/高于清醒基线
-                    row['body_moves_ratio'] > 15  # 有明显肢体动作
-                )
-                
-                if is_awake:
-                    awake_duration += time_interval
-                    continue
-                
-                # 计算心率相对于基线的变化百分比
-                hr_change_from_baseline = ((row['heart_rate'] - baseline_heart_rate) / baseline_heart_rate) * 100 if baseline_heart_rate > 0 else 0
-                
-                # 计算呼吸变异系数（如果有足够的历史数据）
-                # 为了简化，这里使用局部窗口计算呼吸稳定性
-                respiratory_stability = 0
-                if idx > 0 and idx < len(sleep_data) - 1:
-                    window_rr = [
-                        sleep_data.iloc[max(0, idx-2)]['respiratory_rate'],
-                        sleep_data.iloc[idx]['respiratory_rate'],
-                        sleep_data.iloc[min(len(sleep_data)-1, idx+2)]['respiratory_rate']
-                    ]
-                    if len(set(window_rr)) > 1:  # 避免除零错误
-                        rr_std = pd.Series(window_rr).std()
-                        rr_mean = pd.Series(window_rr).mean()
-                        respiratory_stability = (rr_std / rr_mean * 100) if rr_mean > 0 else 0
-                    else:
-                        respiratory_stability = 0
+                if current_stage != stage_value:
+                    # 如果之前有阶段，保存之前的阶段段
+                    if current_stage is not None and current_stage_start_time is not None:
+                        sleep_stage_segments.append({
+                            "label": get_stage_label(current_stage),
+                            "value": str(int(current_stage_duration))  # 持续时间（分钟）作为value
+                        })
+                    
+                    # 开始新的阶段段
+                    current_stage = stage_value
+                    current_stage_start_time = stage_info['time']
+                    current_stage_duration = time_interval
                 else:
-                    respiratory_stability = 0  # 无法计算稳定性时设为0
-
-                # 深睡判定：心率比清醒基线低10%-30%，呼吸频率8-12次/分，无肢体动作
-                is_deep = (
-                    baseline_heart_rate * 0.7 <= row['heart_rate'] <= baseline_heart_rate * 0.9 and  # 心率比基线低10%-30%
-                    8 <= row['respiratory_rate'] <= 12 and  # 呼吸频率8-12次/分
-                    respiratory_stability < 5 and  # 呼吸变异系数<5%
-                    row['body_moves_ratio'] <= 5  # 无肢体动作
-                )
-                
-                # REM判定：心率比深睡基线高20%-40%，呼吸不稳定，无肢体动作
-                # 首先需要估算深睡基线心率
-                estimated_deep_hr = baseline_heart_rate * 0.8  # 假设深睡心率为清醒基线的80%
-                
-                is_rem = (
-                    row['heart_rate'] >= estimated_deep_hr * 1.2 and  # 心率比深睡基线高20%+
-                    respiratory_stability > 15 and  # 呼吸变异系数>15%
-                    row['body_moves_ratio'] <= 2 and  # 无肢体动作
-                    row['respiratory_rate'] >= 9  # 呼吸频率比深睡高
-                )
-                
-                # 浅睡判定：不满足深睡/REM/清醒特征，但符合浅睡特征
-                is_light = (
-                    not is_deep and 
-                    not is_rem and 
-                    not is_awake and
-                    60 <= row['heart_rate'] <= baseline_heart_rate * 0.95 and  # 心率介于深睡和清醒之间
-                    12 <= row['respiratory_rate'] <= 16 and  # 呼吸频率12-16次/分
-                    5 <= respiratory_stability <= 10 and  # 呼吸变异系数5%-10%
-                    row['body_moves_ratio'] <= 15  # 偶有轻微肢体动作
-                )
-                
-                # 根据判定结果分配时间到相应阶段
-                if is_deep:
-                    deep_sleep_duration += time_interval
-                elif is_rem:
-                    rem_sleep_duration += time_interval
-                elif is_light:
-                    light_sleep_duration += time_interval
-                else:
-                    # 如果都不符合，分配给最可能的阶段
-                    if row['heart_rate'] < baseline_heart_rate * 0.85 and row['respiratory_rate'] <= 12 and row['body_moves_ratio'] <= 5:
-                        deep_sleep_duration += time_interval
-                    elif row['heart_rate'] > baseline_heart_rate * 0.9 and (respiratory_stability > 10 or row['body_moves_ratio'] > 10):
-                        awake_duration += time_interval
-                    elif 60 <= row['heart_rate'] <= baseline_heart_rate * 0.9 and 12 <= row['respiratory_rate'] <= 16:
-                        light_sleep_duration += time_interval
-                    else:
-                        # 默认分配给浅睡
-                        light_sleep_duration += time_interval
+                    # 延续当前阶段
+                    current_stage_duration += time_interval
+            
+            # 处理最后一个阶段段
+            if current_stage is not None and current_stage_start_time is not None:
+                sleep_stage_segments.append({
+                    "label": get_stage_label(current_stage),
+                    "value": str(int(current_stage_duration))  # 持续时间（分钟）作为value
+                })
     
     # 计算清醒时长（卧床但不在睡眠状态的时间）
     # 补充清醒时长的计算
-    if not period_data.empty:
-        period_sorted = period_data.sort_values('upload_time')
-        for i in range(len(period_sorted) - 1):
-            current_row = period_sorted.iloc[i]
-            next_row = period_sorted.iloc[i + 1]
-            time_diff = (next_row['upload_time'] - current_row['upload_time']).total_seconds() / 60
-            
-            # 检查是否为清醒时段
-            is_current_awake = (
-                current_row['heart_rate'] >= baseline_heart_rate * 0.95 or
-                current_row['body_moves_ratio'] > 15
-            )
-            
-            if is_current_awake:
-                awake_duration += max(1, time_diff)  # 至少1分钟
+    # 注意：这部分已经在上面的睡眠阶段分析中计算过了，不需要重复计算
+    # 因为我们已经通过向量化方式计算了awake_duration
     
     # 重新计算总睡眠时长，基于有效睡眠阶段的总和
     total_sleep_time = deep_sleep_duration + light_sleep_duration + rem_sleep_duration
@@ -740,7 +821,7 @@ def analyze_sleep_metrics(df, date_str):
         interference_score = 0
 
     # 体征稳定性（10分）
-    hr_variability = period_data['heart_rate'].std() if len(period_data) > 1 else 0
+    hr_variability = sleep_period_data['heart_rate'].std() if len(sleep_period_data) > 1 else 0
     if hr_variability <= 15:
         stability_score = 10
     elif 16 <= hr_variability <= 25:
@@ -750,7 +831,7 @@ def analyze_sleep_metrics(df, date_str):
 
     sleep_score = min(100, round(time_score + deep_sleep_score + efficiency_score + interference_score + stability_score))
 
-    # 返回详细的睡眠分析结果
+    # 返回详细的睡眠分析结果，包含睡眠阶段时间段数据
     result = {
         "date": date_str,
         "bedtime": bedtime.strftime('%Y-%m-%d %H:%M:%S'),
@@ -770,12 +851,13 @@ def analyze_sleep_metrics(df, date_str):
             "rem_sleep_percentage": round(rem_sleep_ratio, 2),
             "awake_percentage": round(awake_ratio, 2)
         },
+        "sleep_stage_segments": sleep_stage_segments,  # 保留：睡眠阶段时间段数据
         "average_metrics": {
             "avg_heart_rate": round(float(avg_heart_rate), 2) if pd.notna(avg_heart_rate) else 0,
             "avg_respiratory_rate": round(float(avg_respiratory_rate), 2) if pd.notna(avg_respiratory_rate) else 0,
             "avg_body_moves_ratio": round(float(avg_body_moves), 2) if pd.notna(avg_body_moves) else 0,
-            "avg_heartbeat_interval": round(float(period_data['avg_heartbeat_interval'].mean()), 2) if 'avg_heartbeat_interval' in period_data.columns else 0,
-            "avg_rms_heartbeat_interval": round(float(period_data['rms_heartbeat_interval'].mean()), 2) if 'rms_heartbeat_interval' in period_data.columns else 0
+            "avg_heartbeat_interval": round(float(sleep_period_data['avg_heartbeat_interval'].mean()), 2) if 'avg_heartbeat_interval' in sleep_period_data.columns else 0,
+            "avg_rms_heartbeat_interval": round(float(sleep_period_data['rms_heartbeat_interval'].mean()), 2) if 'rms_heartbeat_interval' in sleep_period_data.columns else 0
         },
         "summary": f"睡眠质量{'优秀' if sleep_score >= 80 else '良好' if sleep_score >= 60 else '一般' if sleep_score >= 40 else '较差'}"
     }
@@ -783,15 +865,236 @@ def analyze_sleep_metrics(df, date_str):
     return result
 
 
+def smooth_sleep_stages(stages_sequence, min_duration_threshold=3):
+    """
+    平滑睡眠阶段序列，减少碎片化
+    将持续时间少于阈值的小阶段合并到相邻的大阶段中
+    """
+    if not stages_sequence:
+        return stages_sequence
+    
+    # 第一步：合并相邻的相同阶段
+    merged_same_stages = []
+    i = 0
+    while i < len(stages_sequence):
+        current = stages_sequence[i].copy()
+        j = i + 1
+        
+        # 查找连续相同阶段并合并
+        while j < len(stages_sequence) and stages_sequence[j]['stage_value'] == current['stage_value']:
+            current['time_interval'] += stages_sequence[j]['time_interval']
+            j += 1
+        
+        merged_same_stages.append(current)
+        i = j
+    
+    # 第二步：移除或合并短持续时间的阶段
+    if not merged_same_stages:
+        return merged_same_stages
+    
+    result = [merged_same_stages[0]]
+    
+    i = 1
+    while i < len(merged_same_stages):
+        current = merged_same_stages[i]
+        
+        if current['time_interval'] < min_duration_threshold:
+            # 当前阶段太短，需要合并
+            # 合并到相邻的较短阶段（优先合并到前一个）
+            prev = result[-1]
+            prev['time_interval'] += current['time_interval']
+        else:
+            # 当前阶段足够长，添加到结果中
+            result.append(current)
+        
+        i += 1
+    
+    return result
+
+
+def calculate_optimized_sleep_stages(sleep_data, baseline_heart_rate):
+    """
+    优化的睡眠阶段判定函数，解决频繁切换和REM缺失问题
+    """
+    # 复制数据避免修改原数据
+    sleep_data = sleep_data.copy()
+    
+    # 确保数据按时间排序
+    sleep_data = sleep_data.sort_values('upload_time').reset_index(drop=True)
+    
+    # 将生理指标字段转换为数值类型，处理字符串格式的数据
+    physio_fields = ['breath_amp_avg', 'heart_amp_avg', 'breath_freq_std', 'heart_freq_std', 'breath_amp_diff', 'heart_amp_diff']
+    for field in physio_fields:
+        if field in sleep_data.columns:
+            sleep_data[field] = pd.to_numeric(sleep_data[field], errors='coerce')
+    
+    # 1. 改进清醒判定（引入体动、时间、心率综合判断）
+    # 增加时间段判断：白天时段（6:00-22:00）更可能是清醒的
+    sleep_data['hour'] = sleep_data['upload_time'].dt.hour
+    sleep_data['minute'] = sleep_data['upload_time'].dt.minute
+    sleep_data['is_daytime'] = (sleep_data['hour'] >= 6) & (sleep_data['hour'] < 22)
+    
+    # 更细致的时间段判断：上午时段（6:00-12:00）和下午时段（12:00-18:00）和晚上时段（18:00-22:00）
+    # 上午时段（6:00-12:00）最可能是清醒的
+    sleep_data['is_morning'] = (sleep_data['hour'] >= 6) & (sleep_data['hour'] < 12)
+    # 下午时段（12:00-18:00）
+    sleep_data['is_afternoon'] = (sleep_data['hour'] >= 12) & (sleep_data['hour'] < 18)
+    # 晚上时段（18:00-22:00）
+    sleep_data['is_evening'] = (sleep_data['hour'] >= 18) & (sleep_data['hour'] < 22)
+    
+    # 利用新增的生理指标字段增强判断
+    # 呼吸幅度均值和心跳幅度均值可用于判断生理活跃程度
+    if 'breath_amp_avg' in sleep_data.columns and 'heart_amp_avg' in sleep_data.columns:
+        # 呼吸和心跳幅度较高通常表明更清醒的状态
+        breath_amp_quantile = sleep_data['breath_amp_avg'].dropna()
+        heart_amp_quantile = sleep_data['heart_amp_avg'].dropna()
+        breath_thresh = breath_amp_quantile.quantile(0.3) if not breath_amp_quantile.empty else 0
+        heart_thresh = heart_amp_quantile.quantile(0.3) if not heart_amp_quantile.empty else 0
+        
+        sleep_data['amp_indicator'] = (
+            (sleep_data['breath_amp_avg'].fillna(0) > breath_thresh) |
+            (sleep_data['heart_amp_avg'].fillna(0) > heart_thresh)
+        )
+    else:
+        sleep_data['amp_indicator'] = False
+    
+    # 呼吸和心跳频率标准差可用于判断生理稳定性
+    if 'breath_freq_std' in sleep_data.columns and 'heart_freq_std' in sleep_data.columns:
+        # 频率标准差较低表明生理更稳定，倾向于深睡
+        breath_freq_quantile = sleep_data['breath_freq_std'].dropna()
+        heart_freq_quantile = sleep_data['heart_freq_std'].dropna()
+        breath_freq_thresh = breath_freq_quantile.quantile(0.7) if not breath_freq_quantile.empty else float('inf')
+        heart_freq_thresh = heart_freq_quantile.quantile(0.7) if not heart_freq_quantile.empty else float('inf')
+        
+        sleep_data['freq_stability'] = (
+            (sleep_data['breath_freq_std'].fillna(float('inf')) < breath_freq_thresh) &
+            (sleep_data['heart_freq_std'].fillna(float('inf')) < heart_freq_thresh)
+        )
+    else:
+        sleep_data['freq_stability'] = True
+    
+    # 呼吸和心跳幅度差值可用于判断生理波动
+    if 'breath_amp_diff' in sleep_data.columns and 'heart_amp_diff' in sleep_data.columns:
+        breath_diff_quantile = sleep_data['breath_amp_diff'].dropna()
+        heart_diff_quantile = sleep_data['heart_amp_diff'].dropna()
+        breath_diff_thresh = breath_diff_quantile.quantile(0.3) if not breath_diff_quantile.empty else 0
+        heart_diff_thresh = heart_diff_quantile.quantile(0.3) if not heart_diff_quantile.empty else 0
+        
+        sleep_data['amp_diff_indicator'] = (
+            (sleep_data['breath_amp_diff'].fillna(0) > breath_diff_thresh) |
+            (sleep_data['heart_amp_diff'].fillna(0) > heart_diff_thresh)
+        )
+    else:
+        sleep_data['amp_diff_indicator'] = False
+    
+    # 白天时段的清醒判定阈值更低，特别是上午时段
+    sleep_data['is_awake'] = (
+        # 上午时段（6:00-12:00）：非常容易被判定为清醒
+        (sleep_data['is_morning'] & (
+            (sleep_data['heart_rate'] >= baseline_heart_rate * 0.85) |  # 心率稍微高一点
+            (sleep_data['body_moves_ratio'] > 1.5) |  # 或有轻微体动，阈值更低
+            (sleep_data['amp_indicator'])  # 或幅度指标表明清醒
+        )) |
+        # 下午时段（12:00-18:00）：也很容易被判定为清醒
+        (sleep_data['is_afternoon'] & (
+            (sleep_data['heart_rate'] >= baseline_heart_rate * 0.88) |  # 心率稍微高一点
+            (sleep_data['body_moves_ratio'] > 2) |  # 或有轻微体动，阈值更低
+            (sleep_data['amp_indicator'])  # 或幅度指标表明清醒
+        )) |
+        # 晚上时段（18:00-22:00）：相对容易被判定为清醒
+        (sleep_data['is_evening'] & (
+            (sleep_data['heart_rate'] >= baseline_heart_rate * 0.90) |  # 心率稍微高一点
+            (sleep_data['body_moves_ratio'] > 2.5) |  # 或有轻微体动，阈值更低
+            (sleep_data['amp_indicator'])  # 或幅度指标表明清醒
+        )) |
+        # 夜晚时段（22:00-6:00）：需要更严格的标准
+        ((~sleep_data['is_daytime']) & (
+            (sleep_data['heart_rate'] >= baseline_heart_rate * 1.10) |  # 心率需要明显高于基线
+            ((sleep_data['heart_rate'] >= baseline_heart_rate * 0.95) &  # 心率接近基线
+             (sleep_data['body_moves_ratio'] > 5)) |  # 且有体动才算清醒
+            (sleep_data['amp_indicator'])  # 或幅度指标表明清醒
+        ))
+    )
+    
+    # 2. 改进深睡判定（动态呼吸阈值，不再写死13）
+    # 使用呼吸稳定性作为深睡指标，而不是固定呼吸频率值
+    # 计算整体呼吸频率的均值和标准差，以识别相对较低的呼吸频率段
+    overall_resp_mean = sleep_data['respiratory_rate'].mean()
+    overall_resp_std = sleep_data['respiratory_rate'].std()
+    
+    # 深睡判定条件优化，结合新增的生理指标
+    sleep_data['is_deep'] = (
+        (sleep_data['heart_rate'] <= baseline_heart_rate * 0.85) &  # 心率相对较低
+        (sleep_data['respiratory_rate'] <= overall_resp_mean * 0.9) &  # 呼吸频率相对较低（相对于个人平均）
+        (sleep_data['respiratory_stability'] < 5) &  # 呼吸稳定
+        (sleep_data['body_moves_ratio'] <= 3) &  # 体动很少
+        (sleep_data['freq_stability']) &  # 生理频率稳定
+        (~sleep_data['is_awake'])  # 排除清醒状态
+    )
+    
+    # 3. 基于实际深睡数据计算深睡基线（核心优化：替代固定值）
+    # 先筛选出初步判定的深睡数据，计算实际深睡心率均值
+    deep_sleep_data = sleep_data[sleep_data['is_deep']]
+    if not deep_sleep_data.empty:
+        actual_deep_hr = deep_sleep_data['heart_rate'].mean()
+    else:
+        # 若无深睡数据，用基线75%作为兜底
+        actual_deep_hr = baseline_heart_rate * 0.75
+    
+    # 4. 改进REM判定（基于实际深睡基线，解决逻辑矛盾）
+    REM_HR_MULTIPLIER_LOW = 1.10  # 心率比深睡基线高10%
+    REM_HR_MULTIPLIER_HIGH = 1.40  # 心率比深睡基线高40%
+    REM_RESP_STABILITY_LOW = 10   # 呼吸变异系数>10%
+    REM_BODY_MOVES_MAX = 3        # 体动≤3
+    
+    sleep_data['is_rem'] = (
+        (~sleep_data['is_awake']) &  # 排除清醒状态
+        (~sleep_data['is_deep']) &   # 排除深睡状态
+        (sleep_data['heart_rate'] >= actual_deep_hr * REM_HR_MULTIPLIER_LOW) & 
+        (sleep_data['heart_rate'] <= actual_deep_hr * REM_HR_MULTIPLIER_HIGH) &
+        (sleep_data['respiratory_stability'] > REM_RESP_STABILITY_LOW) &  # 呼吸不稳定
+        (sleep_data['body_moves_ratio'] <= REM_BODY_MOVES_MAX) &  # 体动较少
+        (sleep_data['respiratory_rate'] >= 8) &  # 呼吸频率≥8
+        (sleep_data['respiratory_rate'] <= 20) &   # 呼吸频率≤20
+        (sleep_data['amp_diff_indicator']) &  # 幅度差值表明生理活动
+        (~sleep_data['freq_stability'])  # 频率不稳定，符合REM特征
+    )
+    
+    # 5. 浅睡判定（优化：更精准的互斥）
+    sleep_data['is_light'] = (
+        (~sleep_data['is_awake']) & 
+        (~sleep_data['is_deep']) & 
+        (~sleep_data['is_rem']) &
+        (sleep_data['body_moves_ratio'] <= 10) &  # 体动适中
+        (sleep_data['heart_rate'] <= baseline_heart_rate * 0.95)  # 心率低于清醒基线
+    )
+    
+    # ======================== 增加连续验证，避免碎片化 ========================
+    # 对每个阶段的布尔值，计算连续满足的分钟数（滑动窗口）
+    CONTINUOUS_MINUTES = 2  # 连续验证分钟数
+    
+    for stage in ['is_awake', 'is_deep', 'is_rem', 'is_light']:
+        # 滑动窗口：统计当前及前CONTINUOUS_MINUTES-1行是否都满足该阶段
+        sleep_data[f'{stage}_continuous'] = (
+            sleep_data[stage].rolling(window=CONTINUOUS_MINUTES, min_periods=1).sum() == CONTINUOUS_MINUTES
+        )
+    
+    # 初始化阶段值和标签
+    sleep_data['stage_value'] = 2  # 默认为浅睡
+    sleep_data['stage_label'] = "浅睡"
+    
+    return sleep_data
+
+
 @tool
-def analyze_sleep_by_date(date: str, runtime: ToolRuntime = None, table_name: str = "device_data") -> str:
+def analyze_sleep_by_date(date: str, runtime: ToolRuntime = None, table_name: str = "vital_signs") -> str:
     """
     根据指定日期分析睡眠数据
     
     Args:
         date: 日期字符串，格式如 '2024-12-20'
         runtime: ToolRuntime 运行时上下文
-        table_name: 数据库表名，默认为 "device_data"
+        table_name: 数据库表名，默认为 "vital_signs"
     
     Returns:
         JSON格式的睡眠分析结果，包含：
@@ -805,13 +1108,209 @@ def analyze_sleep_by_date(date: str, runtime: ToolRuntime = None, table_name: st
         - sleep_phases: 睡眠阶段分布
         - average_metrics: 平均生理指标
         - summary: 睡眠质量总结
-    
+
     使用场景:
         - 分析特定日期的睡眠质量
         - 监控个人睡眠模式变化
         - 评估睡眠改善措施的效果
     """
     return analyze_single_day_sleep_data(date, table_name)
+
+
+def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, table_name: str = "vital_signs"):
+    """
+    使用设备序列号分析单日睡眠数据
+    时间范围：前一天晚上8点到当天早上10点
+    
+    Args:
+        date_str: 日期字符串，格式如 '2024-12-20'
+        device_sn: 设备序列号
+        table_name: 数据库表名，默认为 "vital_signs"
+    
+    Returns:
+        JSON格式的睡眠分析结果
+    """
+    try:
+        from src.utils.response_handler import SleepAnalysisResponse
+        
+        # 使用新的数据库管理器
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        
+        # 解析日期以构建时间范围
+        target_date = datetime.strptime(date_str, '%Y-%m-%d')
+        prev_date = target_date - timedelta(days=1)
+        
+        # 构建查询条件：检查前一天晚上20点到当天早上10点的数据
+        start_time = prev_date.replace(hour=20, minute=0, second=0, microsecond=0)
+        end_time = target_date.replace(hour=10, minute=0, second=0, microsecond=0)
+        
+        # 构建SQL查询，包含设备过滤条件
+        escaped_table_name = f"`{table_name.replace('`', '``')}`"
+        query = f"""
+        SELECT * 
+        FROM {escaped_table_name} 
+        WHERE upload_time BETWEEN :start_time AND :end_time
+        AND device_sn = :device_sn
+        ORDER BY upload_time
+        """
+        
+        params = {
+            'start_time': start_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'end_time': end_time.strftime('%Y-%m-%d %H:%M:%S'),
+            'device_sn': device_sn
+        }
+        
+        # 执行查询
+        df = db_manager.execute_query(query, params)
+        
+        logger.info(f"查询到 {len(df)} 条设备 {device_sn} 的数据")
+        
+        if df.empty:
+            logger.warning(f"数据库中没有找到 {date_str} 期间的设备 {device_sn} 的数据")
+            # 返回格式一致但数据为0的结果
+            response = SleepAnalysisResponse(
+                success=True,
+                date=date_str,
+                bedtime=f"{date_str} 00:00:00",
+                wakeup_time=f"{date_str} 00:00:00",
+                time_in_bed_minutes=0,
+                sleep_duration_minutes=0,
+                sleep_score=0,
+                bed_exit_count=0,
+                sleep_prep_time_minutes=0,
+                sleep_phases={
+                    "deep_sleep_minutes": 0,
+                    "light_sleep_minutes": 0,
+                    "rem_sleep_minutes": 0,
+                    "awake_minutes": 0,
+                    "deep_sleep_percentage": 0,
+                    "light_sleep_percentage": 0,
+                    "rem_sleep_percentage": 0,
+                    "awake_percentage": 0
+                },
+                sleep_stage_segments=[],
+                average_metrics={
+                    "avg_heart_rate": 0,
+                    "avg_respiratory_rate": 0,
+                    "avg_body_moves_ratio": 0,
+                    "avg_heartbeat_interval": 0,
+                    "avg_rms_heartbeat_interval": 0
+                },
+                summary="暂无数据",
+                device_sn=device_sn,
+                message=f"设备 {device_sn} 在 {date_str} 期间没有数据"
+            )
+            return response.to_json()
+        
+        # 转换时间列为datetime格式
+        df['upload_time'] = pd.to_datetime(df['upload_time'])
+        
+        # 分析睡眠数据
+        result = analyze_sleep_metrics(df, date_str)
+        
+        # 将numpy/pandas类型转换为原生Python类型以支持JSON序列化
+        result = convert_numpy_types(result)
+        
+        # 添加设备序列号到结果中
+        result['device_sn'] = device_sn
+        
+        logger.info(f"睡眠分析完成，结果: {result.get('bedtime', 'N/A')} 到 {result.get('wakeup_time', 'N/A')}")
+        print(f"睡眠分析完成，结果: {result.get('bedtime', 'N/A')} 到 {result.get('wakeup_time', 'N/A')}")
+        
+        # 添加最终结果的详细输出
+        if 'bedtime' in result and 'wakeup_time' in result:
+            print(f"最终就寝时间: {result['bedtime']}")
+            print(f"最终起床时间: {result['wakeup_time']}")
+            print(f"卧床时间: {result.get('time_in_bed_minutes', 'N/A')} 分钟")
+            print(f"睡眠时长: {result.get('sleep_duration_minutes', 'N/A')} 分钟")
+            
+            # 计算时间差
+            try:
+                bedtime_dt = datetime.strptime(result['bedtime'], '%Y-%m-%d %H:%M:%S')
+                wakeup_dt = datetime.strptime(result['wakeup_time'], '%Y-%m-%d %H:%M:%S')
+                time_diff = wakeup_dt - bedtime_dt
+                print(f"时间差: {time_diff}")
+            except Exception as e:
+                print(f"计算时间差时出错: {e}")
+        
+        # 使用SleepAnalysisResponse类包装结果
+        response = SleepAnalysisResponse(
+            success=True,
+            date=result.get('date', date_str),
+            bedtime=result.get('bedtime', f"{date_str} 00:00:00"),
+            wakeup_time=result.get('wakeup_time', f"{date_str} 00:00:00"),
+            time_in_bed_minutes=result.get('time_in_bed_minutes', 0),
+            sleep_duration_minutes=result.get('sleep_duration_minutes', 0),
+            sleep_score=result.get('sleep_score', 0),
+            bed_exit_count=result.get('bed_exit_count', 0),
+            sleep_prep_time_minutes=result.get('sleep_prep_time_minutes', 0),
+            sleep_phases=result.get('sleep_phases', {
+                "deep_sleep_minutes": 0,
+                "light_sleep_minutes": 0,
+                "rem_sleep_minutes": 0,
+                "awake_minutes": 0,
+                "deep_sleep_percentage": 0,
+                "light_sleep_percentage": 0,
+                "rem_sleep_percentage": 0,
+                "awake_percentage": 0
+            }),
+            sleep_stage_segments=result.get('sleep_stage_segments', []),
+            average_metrics=result.get('average_metrics', {
+                "avg_heart_rate": 0,
+                "avg_respiratory_rate": 0,
+                "avg_body_moves_ratio": 0,
+                "avg_heartbeat_interval": 0,
+                "avg_rms_heartbeat_interval": 0
+            }),
+            summary=result.get('summary', '分析完成'),
+            device_sn=result.get('device_sn', device_sn)
+        )
+        return response.to_json()
+        
+    except Exception as e:
+        import traceback
+        error_msg = f"单日睡眠分析失败: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        
+        from src.utils.response_handler import ApiResponse
+        # 返回错误格式但保持一致的结构
+        response = ApiResponse.error(
+            error=str(e),
+            message="睡眠分析失败",
+            data={
+                "date": date_str,
+                "bedtime": f"{date_str} 00:00:00",
+                "wakeup_time": f"{date_str} 00:00:00",
+                "time_in_bed_minutes": 0,
+                "sleep_duration_minutes": 0,
+                "sleep_score": 0,
+                "bed_exit_count": 0,
+                "sleep_prep_time_minutes": 0,
+                "sleep_phases": {
+                    "deep_sleep_minutes": 0,
+                    "light_sleep_minutes": 0,
+                    "rem_sleep_minutes": 0,
+                    "awake_minutes": 0,
+                    "deep_sleep_percentage": 0,
+                    "light_sleep_percentage": 0,
+                    "rem_sleep_percentage": 0,
+                    "awake_percentage": 0
+                },
+                "sleep_stage_segments": [],
+                "average_metrics": {
+                    "avg_heart_rate": 0,
+                    "avg_respiratory_rate": 0,
+                    "avg_body_moves_ratio": 0,
+                    "avg_heartbeat_interval": 0,
+                    "avg_rms_heartbeat_interval": 0
+                },
+                "summary": "分析失败",
+                "device_sn": device_sn,
+                "error": str(e)
+            }
+        )
+        return response.to_json()
 
 
 # 测试函数

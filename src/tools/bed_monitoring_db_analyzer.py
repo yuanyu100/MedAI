@@ -4,17 +4,17 @@ import json
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from langchain.tools import tool
 
 
 class BedMonitoringDBAnalyzer:
     """病床监护数据库数据分析器 - 从数据库读取数据进行分析"""
     
-    def __init__(self, table_name: str = "device_data", connection_string: str = None):
+    def __init__(self, table_name: str = "vital_signs", connection_string: str = None):
         """
         Args:
-            table_name: 数据库表名，默认为 "device_data"
+            table_name: 数据库表名，默认为 "vital_signs"
             connection_string: 数据库连接字符串，如果未提供则使用环境变量配置
         """
         if connection_string is None:
@@ -36,13 +36,17 @@ class BedMonitoringDBAnalyzer:
         """从数据库加载数据"""
         # 首先尝试查询表的所有列，以确定实际的列名
         schema_query = f"DESCRIBE {self.table_name}"
-        schema_df = pd.read_sql(schema_query, self.engine)
-        columns = schema_df['Field'].tolist()
+        
+        # 使用连接执行查询，避免pandas直接使用engine时可能触发的SQLite检查
+        with self.engine.connect() as conn:
+            result = conn.execute(text(schema_query))
+            # 将结果转换为DataFrame
+            schema_df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            columns = schema_df['Field'].tolist()
         
         # 确定实际的列名
         time_col = 'upload_time'
         type_col = 'data_type'
-        content_col = 'data_content'
         
         # 尝试匹配常見的列名
         for col in columns:
@@ -50,8 +54,6 @@ class BedMonitoringDBAnalyzer:
                 time_col = col
             elif 'type' in col.lower() or '类型' in col:
                 type_col = col
-            elif 'content' in col.lower() or '内容' in col:
-                content_col = col
                 
         # 额外检查是否包含中文字段名的变种
         for col in columns:
@@ -59,21 +61,103 @@ class BedMonitoringDBAnalyzer:
                 time_col = col
             elif col in ['数据类型', 'data_type', 'type', 'data_type_col']:
                 type_col = col
-            elif col in ['数据内容', 'data_content', 'content', 'data', 'info', 'message']:
-                content_col = col
         
         # 存储实际的列名
         self.time_col = time_col
         self.type_col = type_col
-        self.content_col = content_col
         
-        # 执行查询
-        query = f"SELECT * FROM {self.table_name} ORDER BY {time_col} ASC"
-        df = pd.read_sql(query, self.engine)
-        return df
+        # 执行查询 - 适配新的vital_signs表结构
+        if 'vital_signs' in self.table_name.lower():
+            # 新的vital_signs表结构，直接使用各字段
+            query = f"""
+            SELECT *, 
+                   {time_col} as upload_time,
+                   {type_col} as data_type
+            FROM {self.table_name} 
+            ORDER BY {time_col} ASC
+            """
+        else:
+            # 旧的表结构，仍然使用原始解析方式
+            query = f"SELECT * FROM {self.table_name} ORDER BY {time_col} ASC"
+        
+        # 使用连接执行查询，避免pandas直接使用engine时可能触发的SQLite检查
+        with self.engine.connect() as conn:
+            result = conn.execute(text(query))
+            # 将结果转换为DataFrame
+            df = pd.DataFrame(result.fetchall(), columns=result.keys())
+            return df
         
     def _parse_all_data(self) -> pd.DataFrame:
         """解析所有数据"""
+        # 检查是否是新的vital_signs表结构
+        if 'vital_signs' in self.table_name.lower():
+            return self._parse_vital_signs_data()
+        else:
+            # 使用原有的解析方式
+            return self._parse_legacy_data()
+    
+    def _parse_vital_signs_data(self) -> pd.DataFrame:
+        """解析vital_signs表数据"""
+        # 将DataFrame中的列映射到内部使用的列名
+        parsed_df = pd.DataFrame()
+        
+        # 时间字段
+        if 'upload_time' in self.df.columns:
+            parsed_df['upload_time'] = pd.to_datetime(self.df['upload_time'])
+        elif self.time_col in self.df.columns:
+            parsed_df['upload_time'] = pd.to_datetime(self.df[self.time_col])
+        else:
+            # 如果没有找到时间字段，使用当前时间
+            parsed_df['upload_time'] = pd.to_datetime(['now'] * len(self.df))
+        
+        # 数据类型字段
+        if 'data_type' in self.df.columns:
+            parsed_df['data_type'] = self.df['data_type']
+        elif self.type_col in self.df.columns:
+            parsed_df['data_type'] = self.df[self.type_col]
+        else:
+            parsed_df['data_type'] = '未知'
+        
+        # 解析各个生命体征字段
+        field_mappings = {
+            'heart_rate': 'heart_rate',
+            'respiratory_rate': 'respiration_rate',
+            'avg_heartbeat_interval': 'hr_interval_avg',
+            'rms_heartbeat_interval': 'hr_interval_rmsd',
+            'std_heartbeat_interval': 'hr_interval_std',
+            'arrhythmia_ratio': 'hr_irregular_ratio',
+            'body_moves_ratio': 'body_move_ratio',
+            'respiratory_pause_count': 'apnea_count',
+            'is_person': 'is_in_bed',
+            # 新增字段
+            'breath_amp_average': 'breath_amp_avg',
+            'heart_amp_average': 'heart_amp_avg',
+            'breath_freq_std': 'breath_freq_std',
+            'heart_freq_std': 'heart_freq_std',
+            'breath_amp_diff': 'breath_amp_diff',
+            'heart_amp_diff': 'heart_amp_diff',
+            'person_id': 'person_id',
+            'is_situp_alarm': 'is_situp_alarm',
+            'is_off_bed_alarm': 'is_off_bed_alarm'
+        }
+        
+        for db_field, internal_field in field_mappings.items():
+            if db_field in self.df.columns:
+                parsed_df[internal_field] = pd.to_numeric(self.df[db_field], errors='coerce')
+            else:
+                parsed_df[internal_field] = None
+        
+        # 特殊处理：如果is_person字段存在，将其转换为布尔值
+        if 'is_person' in self.df.columns:
+            parsed_df['is_in_bed'] = self.df['is_person'].astype(bool)
+        
+        # 排序
+        parsed_df = parsed_df.sort_values('upload_time').reset_index(drop=True)
+        
+        return parsed_df
+    
+    def _parse_legacy_data(self) -> pd.DataFrame:
+        """解析旧格式数据"""
         # 确保所需的列存在
         if self.content_col not in self.df.columns:
             raise KeyError(f"列 '{self.content_col}' 不存在于数据中。可用列: {list(self.df.columns)}")
@@ -143,9 +227,18 @@ class BedMonitoringDBAnalyzer:
         status_df = self.parsed_df[self.parsed_df['data_type'] == '状态'].copy()
         
         if len(status_df) == 0:
-            # 如果没有状态数据，通过心率/呼吸是否为0判断
+            # 如果没有状态数据，通过is_in_bed字段或心率/呼吸判断
             period_df = self.parsed_df[self.parsed_df['data_type'] == '周期数据'].copy()
-            period_df['is_in_bed'] = (period_df['heart_rate'] > 0) | (period_df['respiration_rate'] > 0)
+            
+            # 如果有is_in_bed字段，直接使用；否则通过心率/呼吸判断
+            if 'is_in_bed' in self.parsed_df.columns and self.parsed_df['is_in_bed'].notna().any():
+                period_df = self.parsed_df[
+                    (self.parsed_df['data_type'] == '周期数据') | 
+                    (self.parsed_df['data_type'] == '呼吸暂停')
+                ].copy()
+                period_df['is_in_bed'] = period_df['is_in_bed'].astype(bool)
+            else:
+                period_df['is_in_bed'] = (period_df['heart_rate'] > 0) | (period_df['respiration_rate'] > 0)
         else:
             # 从状态数据推断在床状态
             status_map = {'有人状态': True, '无人状态': False}
@@ -231,10 +324,10 @@ class BedMonitoringDBAnalyzer:
     def analyze_vital_signs(self) -> Dict[str, Any]:
         """FR 2.0: 临床级生命体征分析"""
         
-        # 过滤有效数据（非零值）
+        # 过滤有效数据（非零值），包括周期数据和呼吸暂停数据
         valid_data = self.parsed_df[
-            (self.parsed_df['heart_rate'] > 0) |
-            (self.parsed_df['respiration_rate'] > 0)
+            ((self.parsed_df['data_type'] == '周期数据') | (self.parsed_df['data_type'] == '呼吸暂停')) &
+            ((self.parsed_df['heart_rate'] > 0) | (self.parsed_df['respiration_rate'] > 0))
         ].copy()
         
         if len(valid_data) == 0:
@@ -498,12 +591,12 @@ class BedMonitoringDBAnalyzer:
         return report
 
 
-def analyze_bed_monitoring_from_db(table_name: str = "device_data", connection_string: str = None) -> str:
+def analyze_bed_monitoring_from_db(table_name: str = "vital_signs", connection_string: str = None) -> str:
     """
     从数据库分析病床监护数据并生成护理交班报告的JSON格式分析结果
     
     Args:
-        table_name: 数据库表名，默认为 "device_data"
+        table_name: 数据库表名，默认为 "vital_signs"
         connection_string: 数据库连接字符串，如果未提供则使用环境变量配置
     
     Returns:
@@ -524,12 +617,12 @@ def analyze_bed_monitoring_from_db(table_name: str = "device_data", connection_s
 
 # 供langchain tool使用的包装函数
 @tool
-def bed_monitoring_db_analyzer_tool(table_name: str = "device_data", connection_string: str = None) -> str:
+def bed_monitoring_db_analyzer_tool(table_name: str = "vital_signs", connection_string: str = None) -> str:
     """
     病床监护数据库数据分析工具
     
     Args:
-        table_name: 数据库表名，默认为 "device_data"
+        table_name: 数据库表名，默认为 "vital_signs"
         connection_string: 数据库连接字符串，如果未提供则使用环境变量配置
     
     Returns:
@@ -542,4 +635,3 @@ def bed_monitoring_db_analyzer_tool(table_name: str = "device_data", connection_
         - 晨间评估（晨起心率趋势、苏醒状态）
     """
     return analyze_bed_monitoring_from_db(table_name, connection_string)
-

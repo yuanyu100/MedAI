@@ -1,36 +1,124 @@
 #!/usr/bin/env python3
-"""
-修复版智能体API服务器 - 解决检查点问题
-"""
+
 
 import os
 import sys
 import json
+from datetime import datetime, timedelta, time
+import logging
 import traceback
-import tempfile
-from typing import Dict, Any, Optional
+from typing import Dict, Optional
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from langchain.tools import tool, ToolRuntime
 
 # 添加src目录到Python路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from fastapi.responses import JSONResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 import uvicorn
 from langchain_core.messages import HumanMessage
 import pandas as pd
 
-# 使用简化的智能体
-from simple_agent import build_simple_agent
+# 使用改进的智能体
+from improved_agent import run_improved_agent
+
+# 导入生理指标趋势工具
+from src.tools.physiological_trend_tool import get_physiological_trend_data, get_physiological_trend_data_by_metric
+from src.tools.physiological_analyzer_tool import analyze_physiological_trend
+# 导入睡眠数据检查工具
+from src.tools.sleep_data_checker_tool import (
+    check_previous_night_sleep_data,
+    check_sleep_data_by_time_range,
+    check_detailed_sleep_data
+)
+# 导入新增的周数据检查函数
+from src.tools.sleep_data_checker_tool import check_detailed_sleep_data, check_weekly_sleep_data, check_recent_week_sleep_data
+# 导入睡眠分析服务
+from src.tools.sleep_analyzer_tool import (
+    analyze_single_day_sleep_data,
+    analyze_single_day_sleep_data_with_device
+)
+
+def convert_to_html(text):
+    """将文本转换为HTML格式"""
+    if not text:
+        return ""
+    
+    # 将文本按行分割
+    lines = text.split('\n')
+    html_lines = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            html_lines.append('<br>')
+            continue
+        
+        # 跳过分隔符行（如 ---）
+        if line.strip() == '---':
+            continue
+        
+        # 处理标题（以###开头的行）
+        if line.startswith('### '):
+            title = line[4:].strip()
+            html_lines.append(f'<h3>{title}</h3>')
+        # 处理二级标题（以##开头的行）
+        elif line.startswith('## '):
+            title = line[3:].strip()
+            html_lines.append(f'<h2>{title}</h2>')
+        # 处理一级标题（以#开头的行）
+        elif line.startswith('# '):
+            title = line[2:].strip()
+            html_lines.append(f'<h1>{title}</h1>')
+        # 处理列表项（以数字.开头的行）
+        elif re.match(r'^\d+\. ', line):
+            # 替换所有**为<strong>，但要处理嵌套情况
+            formatted_line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
+            html_lines.append(f'<p>{formatted_line}</p>')
+        # 处理粗体文本（**text**）
+        elif '**' in line:
+            formatted_line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
+            html_lines.append(f'<p>{formatted_line}</p>')
+        # 处理其他普通文本
+        else:
+            # 替换任何剩余的**标记
+            formatted_line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
+            html_lines.append(f'<p>{formatted_line}</p>')
+    
+    return ''.join(html_lines)
 
 
 class AgentRequest(BaseModel):
     """智能体请求模型"""
-    query: str
+    date: str  # 日期格式 YYYY-MM-DD
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    force_refresh: Optional[bool] = False  # 是否强制刷新，为True时不使用缓存
+    include_formatted_time: Optional[bool] = False  # 是否包含格式化的睡眠时间信息
+    formatted_time_input: Optional[str] = None  # 直接提供的格式化睡眠时间信息
     thread_id: Optional[str] = "default-session"
-    file_path: Optional[str] = None
+
+
+class SleepAnalysisWithTimeRequest(BaseModel):
+    """使用格式化时间的睡眠分析请求模型"""
+    date: str  # 日期格式 YYYY-MM-DD
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    force_refresh: Optional[bool] = False  # 是否强制刷新，为True时不使用缓存
+
+
+class WeeklySleepDataCheckRequest(BaseModel):
+    """周睡眠数据检查请求模型"""
+    start_date: str = Field(..., description="开始日期，格式如 '2024-12-20'")
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    # 移除table_name参数，硬编码为vital_signs
+
+
+class RecentWeeklySleepDataCheckRequest(BaseModel):
+    """近期周睡眠数据检查请求模型"""
+    num_weeks: int = Field(1, ge=1, le=4, description="检查的周数，最多4周")
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    # 移除table_name参数，硬编码为vital_signs
 
 
 class AnalysisRequest(BaseModel):
@@ -40,7 +128,7 @@ class AnalysisRequest(BaseModel):
 
 class DatabaseAnalysisRequest(BaseModel):
     """数据库分析请求模型"""
-    table_name: Optional[str] = "device_data"
+    # 移除table_name参数，硬编码为vital_signs
 
 
 class VisualizationRequest(BaseModel):
@@ -52,7 +140,7 @@ class PDFTrendRequest(BaseModel):
     """PDF和趋势分析请求模型"""
     file_path: str
     output_path: Optional[str] = None
-    table_name: Optional[str] = "device_data"
+    # 移除table_name参数，硬编码为vital_signs
 
 
 class QARequest(BaseModel):
@@ -63,14 +151,45 @@ class QARequest(BaseModel):
 class SleepAnalysisRequest(BaseModel):
     """睡眠分析请求模型"""
     date: str  # 日期格式 YYYY-MM-DD
-    table_name: Optional[str] = "device_data"
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    # 移除table_name参数，硬编码为vital_signs
 
 
 class PhysiologicalAnalysisRequest(BaseModel):
     """生理指标分析请求模型"""
     date: str  # 日期格式 YYYY-MM-DD
-    table_name: Optional[str] = "device_data"
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    # 移除table_name参数，硬编码为vital_signs
 
+
+class SleepStageChartRequest(BaseModel):
+    """睡眠分期图请求模型"""
+    date: str  # 日期格式 YYYY-MM-DD
+    # 移除table_name参数，硬编码为vital_signs
+
+
+class ComprehensiveReportRequest(BaseModel):
+    """综合报告请求模型"""
+    date: str  # 日期格式 YYYY-MM-DD
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    # 移除table_name参数，硬编码为vital_signs
+
+
+class SleepDataCheckRequest(BaseModel):
+    """睡眠数据检查请求模型"""
+    date: str  # 日期格式 YYYY-MM-DD
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    # 移除table_name参数，硬编码为vital_signs
+
+
+class SleepAnalysisWithTimeRequest(BaseModel):
+    """使用格式化时间的睡眠分析请求模型"""
+    date: str  # 日期格式 YYYY-MM-DD
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    force_refresh: Optional[bool] = False  # 是否强制刷新，为True时不使用缓存
+
+
+# 删除重复的SleepAnalysisWithTimeRequest定义
 
 # 为qa_retriever创建一个包装函数
 def create_sample_excel():
@@ -418,8 +537,8 @@ async def lifespan(app: FastAPI):
     """应用程序生命周期管理"""
     print("🚀 启动修复版智能体API服务器...")
     # 设置环境变量
-    os.environ.setdefault("QWEN_API_KEY", "sk-2ad6355b98dd43668a5eeb21e50e4642")
-    os.environ.setdefault("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+    # os.environ.setdefault("QWEN_API_KEY", "sk-2ad6355b98dd43668a5eeb21e50e4642")
+    # os.environ.setdefault("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     yield
     # 关闭时的清理
 
@@ -440,92 +559,67 @@ async def root():
         "message": "欢迎使用修复版智能病床监控数据分析系统API",
         "version": "1.0.0",
         "endpoints": {
-            "POST /agent/run": "运行智能体",
-
+            "POST /agent/run": "运行智能体（支持device_sn参数）",
             "POST /analysis/database": "分析数据库数据",
             "POST /visualization": "生成可视化报告",
-            "POST /pdf": "生成PDF报告",
             "POST /trend": "趋势分析",
             "POST /qa": "问答查询",
-            "POST /sleep-analysis": "睡眠分析",
-            "POST /physiological-analysis": "生理指标分析",
+            "POST /sleep-analysis": "睡眠分析（支持device_sn参数）",
+            "POST /physiological-analysis": "生理指标分析（支持device_sn参数）",
+            "POST /physiological-trend": "生理指标趋势分析（返回每5分钟的心率和呼吸频率，时间范围：前一晚20:00至当天早上10:00）",
+            "POST /sleep-data-check": "睡眠数据检查（检查是否存在前一天晚上的睡眠数据，支持device_sn参数）",
+            "POST /weekly-sleep-data-check": "周睡眠数据检查（检查一周内每天的睡眠数据）",
+            "POST /recent-weekly-sleep-data-check": "近期周睡眠数据检查（检查最近几周的睡眠数据）",
+            "POST /ai-analysis": "AI分析（使用格式化的时间信息作为用户提示，支持device_sn参数）",
+            "POST /comprehensive-report": "综合报告（支持device_sn参数）",
             "GET /health": "健康检查"
         }
     }
 
 
-@app.post("/agent/run")
-async def run_agent(request: AgentRequest):
+# @app.post("/agent/run")
+async def run_agent_endpoint(request: AgentRequest):
     """运行智能体"""
     try:
-        print(f"🔄 运行智能体，查询: {request.query}")
+        print(f"🤖 运行智能体: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
         
-        # 构建智能体
-        agent = build_simple_agent()
+        # 运行智能体
+        result = run_improved_agent(
+            date=request.date,
+            thread_id=request.thread_id,
+            force_refresh=request.force_refresh,
+            include_formatted_time=request.include_formatted_time,
+            formatted_time_input=request.formatted_time_input,
+            device_sn=request.device_sn  # 传递设备序列号
+        )
         
-        # 准备输入消息
-        messages = [HumanMessage(content=request.query)]
+        # 转换为HTML格式
+        html_result = convert_to_html(result)
         
-        # 配置会话 - 移除了检查点相关配置
-        config = {"configurable": {"thread_id": request.thread_id}}
+        return {"success": True, "data": html_result}
         
-        # 调用智能体
-        response = agent.invoke({"messages": messages}, config=config)
+    except Exception as e:
+        print(f"❌ 智能体运行失败: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail={
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+# @app.post("/agent/run-markdown")
+async def run_agent_markdown(request: AgentRequest):
+    """运行智能体并返回Markdown格式结果"""
+    try:
+        print(f"🔄 运行智能体并返回Markdown格式，日期: {request.date}, 强制刷新: {request.force_refresh}, 包含格式化时间: {request.include_formatted_time}, 格式化时间输入: {request.formatted_time_input}")
         
-        # 提取响应内容，只返回最终的分析建议，过滤掉中间的工具调用结果
-        result = []
-        for msg in response.get('messages', []):
-            if hasattr(msg, 'content') and msg.content:
-                content = str(msg.content)
-                
-                # 检查内容是否为工具调用结果（JSON格式）
-                content_stripped = content.strip()
-                if content_stripped.startswith('{') and content_stripped.endswith('}'):
-                    try:
-                        # 尝试解析JSON，如果是有效的JSON则认为是工具结果
-                        parsed = json.loads(content_stripped)
-                        # 检查是否包含常见的工具结果标识
-                        if isinstance(parsed, dict) and (
-                            'success' in parsed or 
-                            'date' in parsed or 
-                            'data_type' in parsed or 
-                            'error' in parsed or
-                            'record_count' in parsed
-                        ):
-                            continue  # 跳过工具结果
-                    except json.JSONDecodeError:
-                        # 如果不是有效的JSON，则可能是最终答案
-                        result.append(content)
-                else:
-                    # 如果不是JSON格式，添加到结果中（可能是最终分析建议）
-                    result.append(content)
+        # 使用改进的智能体运行分析，传入日期参数和格式化时间选项
+        result = run_improved_agent(request.date, request.thread_id, force_refresh=request.force_refresh, include_formatted_time=request.include_formatted_time, formatted_time_input=request.formatted_time_input)
         
-        # 如果没有找到非工具结果，尝试从response中获取最终答案
-        if not result:
-            # 查找包含分析、建议、总结等关键词的内容
-            for msg in response.get('messages', []):
-                if hasattr(msg, 'content') and msg.content:
-                    content = str(msg.content)
-                    if any(keyword in content.lower() for keyword in ['分析', '建议', '总结', '报告', 'recommend', 'summary', 'analysis', 'report']):
-                        result.append(content)
-                        break
-        
-        # 如果仍然没有结果，返回最后一个非工具消息
-        if not result:
-            for msg in reversed(response.get('messages', [])):
-                if hasattr(msg, 'content') and msg.content:
-                    content = str(msg.content)
-                    content_stripped = content.strip()
-                    if not (content_stripped.startswith('{') and content_stripped.endswith('}')):
-                        result = [content]
-                        break
-        
-        return {
-            "success": True,
-            "result": result,
-            "thread_id": request.thread_id
-        }
-        
+        # 返回纯文本结果，FastAPI会将其作为text/plain响应
+        return PlainTextResponse(content=result, media_type="text/markdown")
+
     except Exception as e:
         print(f"❌ 运行智能体失败: {str(e)}")
         print(traceback.format_exc())
@@ -536,108 +630,79 @@ async def run_agent(request: AgentRequest):
         })
 
 
-@app.post("/analysis/excel")
-async def analyze_excel_data(request: AnalysisRequest):
-    """分析Excel数据 - 此功能已移除"""
-    return {
-        "success": False,
-        "error": "Excel analysis has been removed",
-        "message": "Excel analysis功能已移除，请使用数据库分析功能。"
-    }
+@app.post("/ai-analysis")
+async def ai_analysis(request: SleepAnalysisWithTimeRequest):
+    """AI分析 - 使用格式化的时间信息作为用户提示"""
+    try:
+        print(f"🤖 运行AI分析: {request.date}, 强制刷新: {request.force_refresh}")
+        
+        # 使用改进的智能体运行分析，包含格式化的睡眠时间信息
+        from improved_agent import run_improved_agent
+        result = run_improved_agent(
+            request.date, 
+            thread_id=f"ai_analysis_{request.date}", 
+            force_refresh=request.force_refresh,
+            include_formatted_time=True,
+            device_sn=request.device_sn  # 传递设备序列号
+        )
+
+        # logger.debug(f"AI analysis result: {result}")
+        
+        # 将结果转换为HTML格式
+        # 由于结果已经是文本格式，我们可以直接返回
+        return {
+            "success": True,
+            "data": result
+        }
+
+    except Exception as e:
+        print(f"❌ AI分析失败: {str(e)}")
+        print(traceback.format_exc())
+        
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "AI分析失败"
+        }
 
 
-@app.post("/analysis/database")
+# @app.post("/analysis/database")
 async def analyze_database_data(request: DatabaseAnalysisRequest):
     """分析数据库数据"""
     try:
-        print(f"📊 分析数据库表: {request.table_name}")
+        print(f"📊 分析数据库表: vital_signs")
         
         # 执行数据库分析
         from src.tools.bed_monitoring_db_analyzer import analyze_bed_monitoring_from_db
-        result = analyze_bed_monitoring_from_db(request.table_name)
+        result = analyze_bed_monitoring_from_db("vital_signs")
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         analysis_result = json.loads(result)
         
-        return {
-            "success": True,
-            "data": analysis_result
-        }
+        # 如果工具返回的是错误格式，需要正确处理
+        if analysis_result.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            return analysis_result
+        
+        # 如果工具成功，返回其数据部分
+        from src.utils.response_handler import ApiResponse
+        response = ApiResponse.success(data=analysis_result)
+        return response.to_dict()
         
     except Exception as e:
         print(f"❌ 数据库分析失败: {str(e)}")
-        print(traceback.format_exc())
         
-        # 返回错误信息，但不崩溃服务器
-        error_response = {
-            "success": False,
-            "error": str(e),
-            "error_type": type(e).__name__,
-            "message": "数据库分析失败，可能是由于数据库连接问题。请检查数据库配置。",
-            "recommended_action": "如果您没有可用的数据库，可以使用 /analysis/excel 端点分析Excel文件"
-        }
-        
-        return error_response
+        from src.utils.response_handler import ApiResponse
+        response = ApiResponse.error(
+            error=str(e), 
+            message="数据库分析失败，可能是由于数据库连接问题。请检查数据库配置。",
+            data={"recommended_action": "如果您没有可用的数据库，可以使用 /analysis/excel 端点分析Excel文件"}
+        )
+        return response.to_dict()
 
 
-@app.post("/visualization")
-async def generate_visualization(request: VisualizationRequest):
-    """生成可视化报告"""
-    try:
-        print("📈 生成可视化报告")
-        
-        # 生成可视化报告
-        # Visualization tool has been removed
-        def generate_nursing_report_visualization(data, output_dir=None):
-            return '{"error": "nursing_report_visualization_tool has been removed"}'
-        result = generate_nursing_report_visualization(request.data)
-        result_dict = json.loads(result)
-        
-        return {
-            "success": result_dict.get('success', False),
-            "data": result_dict
-        }
-        
-    except Exception as e:
-        print(f"❌ 可视化生成失败: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
 
 
-@app.post("/pdf")
-async def generate_pdf_report(request: PDFTrendRequest):
-    """生成PDF报告"""
-    try:
-        print(f"📄 生成PDF报告: {request.file_path}")
-        
-        # 检查文件是否存在
-        if not os.path.exists(request.file_path):
-            raise HTTPException(status_code=404, detail=f"文件不存在: {request.file_path}")
-        
-        # 生成PDF报告
-        # PDF tool has been removed
-        def generate_monitoring_pdf_tool(file_path, output_path=None):
-            return {"error": "monitoring_pdf_tool has been removed"}
-        result = generate_monitoring_pdf_tool(request.file_path, request.output_path)
-        
-        return {
-            "success": True,
-            "pdf_path": result
-        }
-        
-    except Exception as e:
-        print(f"❌ PDF生成失败: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
-
-
-@app.post("/trend")
+# @app.post("/trend")
 async def analyze_trend_data(request: PDFTrendRequest):
     """趋势分析"""
     try:
@@ -645,13 +710,13 @@ async def analyze_trend_data(request: PDFTrendRequest):
         
         # 如果file_path是空的或者默认值，从数据库获取数据
         if not request.file_path or request.file_path == "" or request.file_path == "string":
-            print(f"从数据库表 {request.table_name} 获取数据进行趋势分析")
+            print(f"从数据库表 vital_signs 获取数据进行趋势分析")
             # 直接导入内部函数，避免相对导入问题
             import sys
             import os
             sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
             from analyze_trend_tool import analyze_trend_and_pattern_internal
-            result = analyze_trend_and_pattern_internal(file_path=None, table_name=request.table_name)
+            result = analyze_trend_and_pattern_internal(file_path=None, table_name="vital_signs")
         else:
             # 检查文件是否存在
             import os
@@ -663,12 +728,30 @@ async def analyze_trend_data(request: PDFTrendRequest):
             import os
             sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
             from analyze_trend_tool import analyze_trend_and_pattern_internal
-            result = analyze_trend_and_pattern_internal(file_path=request.file_path, table_name=request.table_name)
+            result = analyze_trend_and_pattern_internal(file_path=request.file_path, table_name="vital_signs")
         
-        return {
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
+        result_dict = json.loads(result)
+        
+        # 如果工具返回的是错误格式，需要正确处理
+        if result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": result_dict.get("success"),
+                "data": result_dict.get("data"),
+                "error": result_dict.get("error"),
+                "message": result_dict.get("message")
+            }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
+        
+        # 如果工具成功，返回其数据部分但移除timestamp字段
+        filtered_result = {
             "success": True,
-            "data": result
+            "data": result_dict
         }
+        return filtered_result
         
     except Exception as e:
         print(f"❌ 趋势分析失败: {str(e)}")
@@ -681,35 +764,46 @@ async def analyze_trend_data(request: PDFTrendRequest):
 
 
 @app.post("/sleep-analysis")
-async def analyze_sleep_data(request: SleepAnalysisRequest):
-    """睡眠数据分析"""
+async def analyze_sleep(request: SleepAnalysisRequest):
+    """睡眠分析"""
     try:
-        print(f"😴 分析睡眠数据: {request.date}")
+        print(f"😴 睡眠分析: {request.date}, 设备: {request.device_sn}")
         
-        # 执行睡眠分析
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
-        from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data
-        result = analyze_single_day_sleep_data(request.date, request.table_name)
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
+        else:
+            # 使用原有函数
+            result = analyze_single_day_sleep_data(request.date, "vital_signs")
         
-        # 解析结果
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         result_dict = json.loads(result)
         
-        # 如果结果包含错误，返回错误信息
-        if "error" in result_dict:
-            return {
-                "success": False,
-                "data": result_dict
+        # 如果工具返回的是错误格式，需要正确处理
+        if result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": result_dict.get("success"),
+                "data": result_dict.get("data"),
+                "error": result_dict.get("error"),
+                "message": result_dict.get("message")
             }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
         
-        return {
-            "success": True,
-            "data": result_dict
+        # 如果工具成功，返回其数据部分但移除timestamp字段
+        filtered_result = {
+            "success": result_dict.get("success"),
+            "data": result_dict.get("data"),
+            "message": result_dict.get("message")
         }
+        # 只保留非None的字段
+        return {k: v for k, v in filtered_result.items() if v is not None}
         
     except Exception as e:
-        print(f"❌ 睡眠数据分析失败: {str(e)}")
+        print(f"❌ 睡眠分析失败: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail={
             "success": False,
@@ -719,35 +813,48 @@ async def analyze_sleep_data(request: SleepAnalysisRequest):
 
 
 @app.post("/physiological-analysis")
-async def analyze_physiological_data(request: PhysiologicalAnalysisRequest):
-    """生理指标数据分析"""
+async def analyze_physiological(request: PhysiologicalAnalysisRequest):
+    """生理指标分析"""
     try:
-        print(f"📊 分析生理指标数据: {request.date}")
+        print(f"📊 生理指标分析: {request.date}, 设备: {request.device_sn}")
         
-        # 执行生理指标分析
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
-        from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data
-        result = analyze_single_day_physiological_data(request.date, request.table_name)
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
+            result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
+        else:
+            # 使用原有函数
+            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data
+            result = analyze_single_day_physiological_data(request.date, "vital_signs")
         
-        # 解析结果
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         result_dict = json.loads(result)
         
-        # 如果结果包含错误，返回错误信息
-        if "error" in result_dict:
-            return {
-                "success": False,
-                "data": result_dict
+        # 如果工具返回的是错误格式，需要正确处理
+        if result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": result_dict.get("success"),
+                "data": result_dict.get("data"),
+                "error": result_dict.get("error"),
+                "message": result_dict.get("message")
             }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
         
-        return {
-            "success": True,
-            "data": result_dict
+        # 如果工具成功，返回其数据部分但移除timestamp字段
+        filtered_result = {
+            "success": result_dict.get("success"),
+            "data": result_dict.get("data"),
+            "message": result_dict.get("message")
         }
+        # 只保留非None的字段
+        return {k: v for k, v in filtered_result.items() if v is not None}
         
     except Exception as e:
-        print(f"❌ 生理指标数据分析失败: {str(e)}")
+        print(f"❌ 生理指标分析失败: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail={
             "success": False,
@@ -756,7 +863,7 @@ async def analyze_physiological_data(request: PhysiologicalAnalysisRequest):
         })
 
 
-@app.post("/qa")
+# @app.post("/qa")
 async def qa_query(request: QARequest):
     """问答查询"""
     try:
@@ -783,6 +890,52 @@ async def qa_query(request: QARequest):
         })
 
 
+# 新增：生理指标趋势分析请求模型
+class PhysiologicalTrendRequest(BaseModel):
+    """生理指标趋势分析请求模型"""
+    date: str  # 日期格式 YYYY-MM-DD
+    metric: Optional[str] = None  # 指标类型，可选 'heart_rate' 或 'respiratory_rate'
+    device_sn: Optional[str] = None  # 设备序列号（可选）
+    # 移除table_name参数，硬编码为vital_signs
+
+
+@app.post("/physiological-trend")
+async def physiological_trend_endpoint(request: PhysiologicalTrendRequest):
+    """生理指标趋势分析（心率和呼吸率随时间变化）"""
+    try:
+        print(f"📊 生理指标趋势分析请求: {request.date}, 设备: {request.device_sn}")
+        
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            from src.tools.physiological_analyzer_tool import analyze_physiological_trend_with_device
+            result = analyze_physiological_trend_with_device(request.date, request.device_sn)
+        else:
+            # 使用原有函数
+            from src.tools.physiological_analyzer_tool import analyze_physiological_trend
+            result = analyze_physiological_trend(request.date)
+        result_dict = json.loads(result)
+        
+        # 直接返回结果但移除timestamp字段
+        filtered_result = {
+            "success": True,
+            "data": result_dict
+        }
+        return filtered_result
+        
+    except Exception as e:
+        print(f"❌ 生理指标趋势分析失败: {str(e)}")
+        print(traceback.format_exc())
+        
+        # 返回错误响应但移除timestamp字段
+        error_result = {
+            "success": False,
+            "error": str(e),
+            "message": "生理指标趋势分析失败"
+        }
+        return error_result
+
+
 @app.get("/health")
 async def health_check():
     """健康检查端点"""
@@ -791,6 +944,387 @@ async def health_check():
         "message": "修复版智能体API服务器运行正常",
         "timestamp": datetime.now().isoformat()
     }
+
+
+# 新增：睡眠数据检查端点
+# @app.post("/sleep-data-check")
+async def check_sleep_data(request: SleepDataCheckRequest):
+    """检查睡眠数据是否存在"""
+    try:
+        print(f"🔍 检查睡眠数据: {request.date}, 设备: {request.device_sn}")
+        
+        # 根据是否有设备序列号来决定如何获取数据
+        if request.device_sn:
+            # 如果提供了设备序列号，使用带设备的函数
+            result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
+        else:
+            # 否则使用普通函数
+            result = check_detailed_sleep_data(request.date)
+        
+        # 解析结果
+        result_data = json.loads(result)
+        
+        # 直接返回结果但移除timestamp字段
+        filtered_result = {
+            "success": True,
+            "data": result_data
+        }
+        return filtered_result
+        
+    except Exception as e:
+        print(f"❌ 检查睡眠数据失败: {str(e)}")
+        print(traceback.format_exc())
+        
+        # 返回错误响应但移除timestamp字段
+        error_result = {
+            "success": False,
+            "error": str(e),
+            "message": "检查睡眠数据失败"
+        }
+        return error_result
+
+
+# 新增：周睡眠数据检查端点
+@app.post("/weekly-sleep-data-check")
+async def check_weekly_sleep_data_endpoint(request: WeeklySleepDataCheckRequest):
+    """检查一周的睡眠数据"""
+    try:
+        print(f"🔍 检查周睡眠数据: {request.start_date}, 设备: {request.device_sn}")
+        
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            from src.tools.sleep_data_checker_tool import check_weekly_sleep_data_with_device
+            result = check_weekly_sleep_data_with_device(request.start_date, request.device_sn, "vital_signs")
+        else:
+            # 使用原有函数
+            result = check_weekly_sleep_data(request.start_date, "vital_signs")
+        
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
+        result_dict = json.loads(result)
+        
+        # 如果工具返回的是错误格式，需要正确处理
+        if result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": result_dict.get("success"),
+                "data": result_dict.get("data"),
+                "error": result_dict.get("error"),
+                "message": result_dict.get("message")
+            }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
+        
+        # 简化返回值，只保留关键信息
+        simplified_data = {
+            "week_start_date": result_dict.get("week_start_date"),
+            "week_end_date": result_dict.get("week_end_date"),
+            "weekly_summary": result_dict.get("weekly_summary"),
+            "daily_results": [
+                {
+                    "date": day["date"],
+                    "has_sleep_data": day["has_sleep_data"],
+                    "record_count": day["record_count"],
+                    "day_of_week_cn": day["day_of_week_cn"]
+                } for day in result_dict.get("daily_results", [])
+            ]
+        }
+        
+        # 构建正确的响应格式，移除timestamp
+        filtered_result = {
+            "success": True,
+            "data": simplified_data
+        }
+        return filtered_result
+        
+    except Exception as e:
+        print(f"❌ 周睡眠数据检查失败: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail={
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+# 新增：近期周睡眠数据检查端点
+# @app.post("/recent-weekly-sleep-data-check")
+async def check_recent_weekly_sleep_data_endpoint(request: RecentWeeklySleepDataCheckRequest):
+    """检查近期几周的睡眠数据"""
+    try:
+        print(f"🔍 检查近期{request.num_weeks}周睡眠数据, 设备: {request.device_sn}")
+        
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            from src.tools.sleep_data_checker_tool import check_recent_week_sleep_data_with_device
+            result = check_recent_week_sleep_data_with_device(request.num_weeks, request.device_sn, "vital_signs")
+        else:
+            # 使用原有函数
+            result = check_recent_week_sleep_data(request.num_weeks, "vital_signs")
+        
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
+        result_dict = json.loads(result)
+        
+        # 如果工具返回的是错误格式，需要正确处理
+        if result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": result_dict.get("success"),
+                "data": result_dict.get("data"),
+                "error": result_dict.get("error"),
+                "message": result_dict.get("message")
+            }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
+        
+        # 简化返回值，只保留关键信息
+        simplified_data = {
+            "period_summary": result_dict.get("period_summary"),
+            "weekly_results": [
+                {
+                    "week_start_date": week.get("week_start_date"),
+                    "week_end_date": week.get("week_end_date"),
+                    "weekly_summary": week.get("weekly_summary"),
+                    "daily_results": [
+                        {
+                            "date": day["date"],
+                            "has_sleep_data": day["has_sleep_data"],
+                            "record_count": day["record_count"],
+                            "day_of_week_cn": day["day_of_week_cn"]
+                        } for day in week.get("daily_results", [])
+                    ]
+                } for week in result_dict.get("weekly_results", [])
+            ]
+        }
+        
+        # 构建正确的响应格式，移除timestamp
+        filtered_result = {
+            "success": True,
+            "data": simplified_data
+        }
+        return filtered_result
+        
+    except Exception as e:
+        print(f"❌ 近期周睡眠数据检查失败: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail={
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+@app.post("/comprehensive-report")
+async def get_comprehensive_report(request: ComprehensiveReportRequest):
+    """获取综合报告 - 包含睡眠和生理指标"""
+    try:
+        print(f"📋 获取综合报告: {request.date}, 设备: {request.device_sn}")
+        
+        # 获取睡眠分析数据
+        import sys
+        import os
+        sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
+        
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data_with_device
+            sleep_result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
+        else:
+            # 使用原有函数
+            from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data
+            sleep_result = analyze_single_day_sleep_data(request.date, "vital_signs")
+        
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
+        sleep_result_dict = json.loads(sleep_result)
+        
+        # 如果工具返回的是错误格式，需要正确处理
+        if sleep_result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": sleep_result_dict.get("success"),
+                "data": sleep_result_dict.get("data"),
+                "error": sleep_result_dict.get("error"),
+                "message": sleep_result_dict.get("message")
+            }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
+        
+        # 获取生理指标分析数据
+        if request.device_sn:
+            # 使用带设备过滤的函数
+            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
+            physio_result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
+        else:
+            # 使用原有函数
+            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data
+            physio_result = analyze_single_day_physiological_data(request.date, "vital_signs")
+        
+        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
+        physio_result_dict = json.loads(physio_result)
+        
+        # 如果工具返回的是错误格式，需要正确处理
+        if physio_result_dict.get("success") is False:
+            # 工具已经返回了完整的错误响应
+            # 但我们需要移除timestamp字段
+            filtered_result = {
+                "success": physio_result_dict.get("success"),
+                "data": physio_result_dict.get("data"),
+                "error": physio_result_dict.get("error"),
+                "message": physio_result_dict.get("message")
+            }
+            # 只保留非None的字段
+            return {k: v for k, v in filtered_result.items() if v is not None}
+        
+        # 从工具返回的数据中提取实际数据部分
+        sleep_data = sleep_result_dict.get("data", {})
+        physio_data = physio_result_dict.get("data", {})
+        
+        # 整合数据并生成报告
+        report_data = generate_comprehensive_report(sleep_data, physio_data, request.date)
+        
+        # 构建正确的响应格式，移除timestamp
+        filtered_result = {
+            "success": True,
+            "data": report_data
+        }
+        return filtered_result
+
+    except Exception as e:
+        print(f"❌ 综合报告获取失败: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail={
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+def generate_comprehensive_report(sleep_data: dict, physio_data: dict, date: str = "unknown"):
+    """
+    Generate comprehensive report integrating sleep and physiological data
+    """
+    # Calculate total sleep duration (hours)
+    sleep_duration_hours = sleep_data.get('sleep_duration_minutes', 0) / 60
+    
+    # Deep sleep duration (minutes)
+    deep_sleep_minutes = sleep_data.get('sleep_phases', {}).get('deep_sleep_minutes', 0)
+    
+    # Sleep preparation time (minutes)
+    sleep_prep_time_minutes = sleep_data.get('sleep_prep_time_minutes', 0)
+    
+    # Apnea events per hour
+    # Since we don't have explicit total sleep duration to calculate events per hour, 
+    # we use a simplified method or assume we can find relevant apnea metrics in the data
+    apnea_count = physio_data.get('respiratory_metrics', {}).get('apnea_count', 0)
+    # Assume sleep duration as the basis for calculating apnea frequency
+    apnea_per_hour = (apnea_count / sleep_duration_hours) if sleep_duration_hours > 0 else 0
+    
+    # Average heart rate
+    avg_heart_rate = physio_data.get('heart_rate_metrics', {}).get('avg_heart_rate', 0)
+    
+    # Minimum heart rate
+    min_heart_rate = physio_data.get('heart_rate_metrics', {}).get('min_heart_rate', 0)
+    
+    # Maximum heart rate
+    max_heart_rate = physio_data.get('heart_rate_metrics', {}).get('max_heart_rate', 0)
+    
+    # Average respiratory rate
+    avg_respiratory_rate = physio_data.get('respiratory_metrics', {}).get('avg_respiratory_rate', 0)
+    
+    # Evaluation function
+    def evaluate_value(value, normal_range, is_higher_better=False):
+        """Evaluate if metric is normal"""
+        if isinstance(normal_range, tuple):
+            lower, upper = normal_range
+            if value < lower:
+                return "↓", f"<{lower}"
+            elif value > upper:
+                return "↑", f">{upper}"
+            else:
+                return "◎", f"{lower}-{upper}"
+        else:  # Single threshold comparison
+            if is_higher_better:
+                if value >= normal_range:
+                    return "◎", f">={normal_range}"
+                else:
+                    return "↓", f"<{normal_range}"
+            else:
+                if value <= normal_range:
+                    return "◎", f"<={normal_range}"
+                else:
+                    return "↑", f">{normal_range}"
+    
+    # Generate metric evaluations
+    sleep_duration_eval, sleep_duration_ref = evaluate_value(sleep_duration_hours, (6.5, 12))  # 睡眠时长正常范围6.5-12小时
+    deep_sleep_eval, deep_sleep_ref = evaluate_value(deep_sleep_minutes, (40, 240))  # 深睡眠正常范围40-240分钟
+    sleep_prep_eval, sleep_prep_ref = evaluate_value(sleep_prep_time_minutes, (0, 30))  # 入睡准备时间正常范围0-30分钟
+    apnea_eval, apnea_ref = evaluate_value(apnea_per_hour, (0, 5))  # 呼吸暂停正常范围0-5次/小时
+    avg_hr_eval, avg_hr_ref = evaluate_value(avg_heart_rate, (55, 70))  # 平均心率正常范围55-70次/分钟
+    min_hr_eval, min_hr_ref = evaluate_value(min_heart_rate, 52, is_higher_better=True)  # 最低心率应≥52
+    max_hr_eval, max_hr_ref = evaluate_value(max_heart_rate, 85)  # 最高心率应≤85
+    avg_resp_eval, avg_resp_ref = evaluate_value(avg_respiratory_rate, (11, 18))  # 平均呼吸频率正常范围11-18次/分钟)
+    
+    # Return comprehensive report
+    report = {
+        "date": date,
+        "indicators": [
+            {
+                "name": "总睡眠时长",
+                "value": f"{sleep_duration_hours:.1f} 小时",
+                "result": sleep_duration_eval,
+                "reference": sleep_duration_ref
+            },
+            {
+                "name": "深睡眠时长",
+                "value": f"{deep_sleep_minutes} 分钟",
+                "result": deep_sleep_eval,
+                "reference": f">{deep_sleep_ref.split('>')[-1]}" if '>' in deep_sleep_ref else deep_sleep_ref
+            },
+            {
+                "name": "入睡准备时间",
+                "value": f"{sleep_prep_time_minutes} 分钟",
+                "result": sleep_prep_eval,
+                "reference": sleep_prep_ref.split('<')[-1] if '<' in sleep_prep_ref else sleep_prep_ref
+            },
+            {
+                "name": "呼吸暂停事件",
+                "value": f"{apnea_per_hour:.1f} 次/小时",
+                "result": apnea_eval,
+                "reference": apnea_ref.split('<')[-1] if '<' in apnea_ref else apnea_ref
+            },
+            {
+                "name": "平均心率",
+                "value": f"{avg_heart_rate} 次/分钟",
+                "result": avg_hr_eval,
+                "reference": avg_hr_ref
+            },
+            {
+                "name": "最低心率",
+                "value": f"{min_heart_rate} 次/分钟",
+                "result": min_hr_eval,
+                "reference": min_hr_ref.split('≥')[-1] if '≥' in min_hr_ref else f"≥{min_heart_rate}"
+            },
+            {
+                "name": "最高心率",
+                "value": f"{max_heart_rate} 次/分钟",
+                "result": max_hr_eval,
+                "reference": max_hr_ref.split('≤')[-1] if '≤' in max_hr_ref else f"≤{max_heart_rate}"
+            },
+            {
+                "name": "平均呼吸频率",
+                "value": f"{avg_respiratory_rate} 次/分钟",
+                "result": avg_resp_eval,
+                "reference": avg_resp_ref
+            }
+        ]
+    }
+    
+    return report
 
 
 def start_server(host: str = "0.0.0.0", port: int = 8080, reload: bool = False):
@@ -809,7 +1343,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="启动修复版智能体API服务器")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="服务器主机地址")
-    parser.add_argument("-p", "--port", type=int, default=9000, help="服务器端口")
+    parser.add_argument("-p", "--port", type=int, default=9001, help="服务器端口")
     parser.add_argument("--reload", action="store_true", help="启用热重载模式")
     
     args = parser.parse_args()

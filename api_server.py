@@ -92,7 +92,7 @@ async def root():
 
             "POST /analysis/database": "分析数据库数据",
             "POST /visualization": "生成可视化报告",
-            "POST /pdf": "生成PDF报告",
+
             "POST /trend": "趋势分析",
             "POST /qa": "问答查询",
             "GET /health": "健康检查"
@@ -140,8 +140,6 @@ async def run_agent(request: AgentRequest):
         })
 
 
-
-
 @app.post("/analysis/database")
 async def analyze_database_data(request: DatabaseAnalysisRequest):
     """分析数据库数据"""
@@ -184,34 +182,6 @@ async def generate_visualization(request: VisualizationRequest):
         
     except Exception as e:
         print(f"❌ 可视化生成失败: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
-
-
-@app.post("/pdf")
-async def generate_pdf_report(request: PDFTrendRequest):
-    """生成PDF报告"""
-    try:
-        print(f"📄 生成PDF报告: {request.file_path}")
-        
-        # 检查文件是否存在
-        if not os.path.exists(request.file_path):
-            raise HTTPException(status_code=404, detail=f"文件不存在: {request.file_path}")
-        
-        # 生成PDF报告
-        result = {"error": "monitoring_pdf_tool has been removed"}
-        
-        return {
-            "success": True,
-            "pdf_path": result
-        }
-        
-    except Exception as e:
-        print(f"❌ PDF生成失败: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail={
             "success": False,
