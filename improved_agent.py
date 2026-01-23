@@ -588,7 +588,7 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
                     return "暂无数据分析"
                 else:
                     # 如果是其他错误，继续处理
-                    formatted_time_str = f"我 XX:XX 上床，XX:XX 入睡，XX:XX 醒来\n请根据睡眠数据，提供专业的睡眠分析和建议。"
+                    formatted_time_str = f"请根据睡眠数据，提供专业的睡眠分析和建议。"
                     formatted_time_input = formatted_time_str
                     
                     # 更新查询以使用格式化的数据
@@ -664,12 +664,13 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
     analysis_result = "\n".join(result) if result else "暂无数据分析"
     
     # 如果存在formatted_time_input_local，则将其放在分析结果前面
-    if formatted_time_input_local:
-        # 将原始数据信息作为HTML段落放在分析结果前
-        html_formatted_input = formatted_time_input_local.replace("\n", "<br>")  # 转换换行为HTML<br>标签
-        final_result = f"<div class=\"raw-data\">{html_formatted_input}</div><br><br>{analysis_result}"
-    else:
-        final_result = analysis_result
+    # if formatted_time_input_local:
+    #     # 将原始数据信息作为HTML段落放在分析结果前
+    #     html_formatted_input = formatted_time_input_local.replace("\n", "<br>")  # 转换换行为HTML<br>标签
+    #     final_result = f"<div class=\"raw-data\">{html_formatted_input}</div><br><br>{analysis_result}"
+    # else:
+    #     final_result = analysis_result
+    final_result = analysis_result
 
     logger.debug(f"Final result: {final_result[:200]}...")  # 只记录前200个字符
     

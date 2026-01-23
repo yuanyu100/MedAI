@@ -1313,6 +1313,104 @@ def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, tab
         return response.to_json()
 
 
+@tool
+def store_calculated_sleep_data(sleep_analysis_result: str, runtime: ToolRuntime = None) -> str:
+    """
+    将计算得出的睡眠分析结果存储到数据库中
+    
+    Args:
+        sleep_analysis_result: JSON格式的睡眠分析结果
+        
+    Returns:
+        JSON格式的存储结果
+    """
+    try:
+        from src.db.database import get_db_manager
+        import json
+        
+        # 解析输入的JSON数据
+        if isinstance(sleep_analysis_result, str):
+            sleep_data = json.loads(sleep_analysis_result)
+        else:
+            sleep_data = sleep_analysis_result
+        
+        # 如果是带有data包装的对象，解包它
+        if 'data' in sleep_data:
+            sleep_data = sleep_data['data']
+        
+        # 获取数据库管理器并存储数据
+        db_manager = get_db_manager()
+        db_manager.store_calculated_sleep_data(sleep_data)
+        
+        return json.dumps({
+            "success": True,
+            "message": "睡眠分析数据已成功存储到数据库",
+            "date": sleep_data.get('date', 'Unknown'),
+            "device_sn": sleep_data.get('device_sn', 'Unknown')
+        }, ensure_ascii=False, indent=2)
+    
+    except Exception as e:
+        import traceback
+        error_msg = f"存储睡眠分析数据失败: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "message": "存储睡眠分析数据失败"
+        }, ensure_ascii=False, indent=2)
+
+
+@tool
+def get_stored_sleep_data(date: str, device_sn: str = None, runtime: ToolRuntime = None) -> str:
+    """
+    从数据库中获取已存储的睡眠分析数据
+    
+    Args:
+        date: 日期字符串，格式如 '2024-12-20'
+        device_sn: 设备序列号（可选）
+        
+    Returns:
+        JSON格式的存储的睡眠数据
+    """
+    try:
+        from src.db.database import get_db_manager
+        import json
+        
+        # 获取数据库管理器并查询数据
+        db_manager = get_db_manager()
+        result_df = db_manager.get_calculated_sleep_data(date, device_sn)
+        
+        if result_df.empty:
+            return json.dumps({
+                "success": True,
+                "message": "未找到指定日期的睡眠数据",
+                "date": date,
+                "device_sn": device_sn,
+                "data": None
+            }, ensure_ascii=False, indent=2)
+        
+        # 转换为字典列表格式
+        data = result_df.to_dict('records')
+        
+        return json.dumps({
+            "success": True,
+            "message": f"找到 {len(data)} 条睡眠数据记录",
+            "date": date,
+            "device_sn": device_sn,
+            "data": data[0] if len(data) == 1 else data
+        }, ensure_ascii=False, indent=2)
+    
+    except Exception as e:
+        import traceback
+        error_msg = f"获取睡眠数据失败: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "message": "获取睡眠数据失败"
+        }, ensure_ascii=False, indent=2)
+
+
 # 测试函数
 if __name__ == '__main__':
     # 示例：分析今天的睡眠数据

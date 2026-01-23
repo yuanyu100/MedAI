@@ -911,6 +911,167 @@ def format_physiological_analysis_natural_language(date_str: str, device_sn: str
 
 
 
+@tool
+def store_calculated_physiological_data(physiological_analysis_result: str, runtime: ToolRuntime = None) -> str:
+    """
+    将计算得出的生理指标分析结果存储到数据库中
+    
+    Args:
+        physiological_analysis_result: JSON格式的生理指标分析结果
+        
+    Returns:
+        JSON格式的存储结果
+    """
+    try:
+        from src.db.database import get_db_manager
+        import json
+        
+        # 解析输入的JSON数据
+        if isinstance(physiological_analysis_result, str):
+            physio_data = json.loads(physiological_analysis_result)
+        else:
+            physio_data = physiological_analysis_result
+        
+        # 如果是带有data包装的对象，解包它
+        if 'data' in physio_data:
+            physio_data = physio_data['data']
+        
+        # 获取数据库管理器并存储数据
+        db_manager = get_db_manager()
+        
+        # 首先确保计算得出的睡眠数据表存在（复用相同的表结构）
+        db_manager.create_calculated_sleep_data_table()
+        
+        # 准备要存储的数据，映射生理指标到表结构
+        sleep_data = {
+            'date': physio_data.get('date', ''),
+            'device_sn': physio_data.get('device_sn', ''),
+            'bedtime': None,  # 生理指标分析可能没有就寝时间
+            'wakeup_time': None,  # 生理指标分析可能没有起床时间
+            'time_in_bed_minutes': 0,
+            'sleep_duration_minutes': 0,
+            'sleep_score': 0,
+            'bed_exit_count': 0,
+            'sleep_prep_time_minutes': 0,
+            'sleep_phases': {},  # 生理指标不涉及睡眠阶段
+            'average_metrics': physio_data.get('heart_rate_metrics', {}),
+            'respiratory_metrics': physio_data.get('respiratory_metrics', {}),
+            'heart_rate_metrics': physio_data.get('heart_rate_metrics', {})
+        }
+        
+        # 添加生理指标数据
+        respiratory_metrics = physio_data.get('respiratory_metrics', {})
+        heart_rate_metrics = physio_data.get('heart_rate_metrics', {})
+        
+        # 映射数据到表字段
+        sleep_data['avg_heart_rate'] = heart_rate_metrics.get('avg_heart_rate', 0)
+        sleep_data['avg_respiratory_rate'] = respiratory_metrics.get('avg_respiratory_rate', 0)
+        sleep_data['min_heart_rate'] = heart_rate_metrics.get('min_heart_rate', 0)
+        sleep_data['max_heart_rate'] = heart_rate_metrics.get('max_heart_rate', 0)
+        sleep_data['min_respiratory_rate'] = respiratory_metrics.get('min_respiratory_rate', 0)
+        sleep_data['max_respiratory_rate'] = respiratory_metrics.get('max_respiratory_rate', 0)
+        sleep_data['apnea_count'] = respiratory_metrics.get('apnea_count', 0)
+        sleep_data['max_apnea_duration_seconds'] = respiratory_metrics.get('max_apnea_duration_seconds', 0)
+        sleep_data['avg_apnea_duration_seconds'] = respiratory_metrics.get('avg_apnea_duration_seconds', 0)
+        sleep_data['respiratory_health_score'] = respiratory_metrics.get('respiratory_health_score', 0)
+        sleep_data['hrv_score'] = heart_rate_metrics.get('hrv_score', 0)
+        
+        db_manager.store_calculated_sleep_data(sleep_data)
+        
+        return json.dumps({
+            "success": True,
+            "message": "生理指标分析数据已成功存储到数据库",
+            "date": physio_data.get('date', 'Unknown'),
+            "device_sn": physio_data.get('device_sn', 'Unknown')
+        }, ensure_ascii=False, indent=2)
+    
+    except Exception as e:
+        import traceback
+        error_msg = f"存储生理指标分析数据失败: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "message": "存储生理指标分析数据失败"
+        }, ensure_ascii=False, indent=2)
+
+
+@tool
+def get_stored_physiological_data(date: str, device_sn: str = None, runtime: ToolRuntime = None) -> str:
+    """
+    从数据库中获取已存储的生理指标分析数据
+    
+    Args:
+        date: 日期字符串，格式如 '2024-12-20'
+        device_sn: 设备序列号（可选）
+        
+    Returns:
+        JSON格式的存储的生理指标数据
+    """
+    try:
+        from src.db.database import get_db_manager
+        import json
+        
+        # 获取数据库管理器并查询数据
+        db_manager = get_db_manager()
+        result_df = db_manager.get_calculated_sleep_data(date, device_sn)
+        
+        if result_df.empty:
+            return json.dumps({
+                "success": True,
+                "message": "未找到指定日期的生理指标数据",
+                "date": date,
+                "device_sn": device_sn,
+                "data": None
+            }, ensure_ascii=False, indent=2)
+        
+        # 转换为字典列表格式
+        data = result_df.to_dict('records')
+        
+        # 重构数据格式以匹配生理指标分析的预期格式
+        formatted_data = []
+        for record in data:
+            formatted_record = {
+                "date": record.get('date', date),
+                "device_sn": record.get('device_sn', device_sn),
+                "heart_rate_metrics": {
+                    "avg_heart_rate": record.get('avg_heart_rate', 0),
+                    "min_heart_rate": record.get('min_heart_rate', 0),
+                    "max_heart_rate": record.get('max_heart_rate', 0),
+                    "hrv_score": record.get('hrv_score', 0)
+                },
+                "respiratory_metrics": {
+                    "avg_respiratory_rate": record.get('avg_respiratory_rate', 0),
+                    "min_respiratory_rate": record.get('min_respiratory_rate', 0),
+                    "max_respiratory_rate": record.get('max_respiratory_rate', 0),
+                    "apnea_count": record.get('apnea_count', 0),
+                    "max_apnea_duration_seconds": record.get('max_apnea_duration_seconds', 0),
+                    "avg_apnea_duration_seconds": record.get('avg_apnea_duration_seconds', 0),
+                    "respiratory_health_score": record.get('respiratory_health_score', 0)
+                },
+                "summary": f"从数据库获取的{date}生理指标数据"
+            }
+            formatted_data.append(formatted_record)
+        
+        return json.dumps({
+            "success": True,
+            "message": f"找到 {len(formatted_data)} 条生理指标数据记录",
+            "date": date,
+            "device_sn": device_sn,
+            "data": formatted_data[0] if len(formatted_data) == 1 else formatted_data
+        }, ensure_ascii=False, indent=2)
+    
+    except Exception as e:
+        import traceback
+        error_msg = f"获取生理指标数据失败: {str(e)}\n{traceback.format_exc()}"
+        logger.error(error_msg)
+        return json.dumps({
+            "success": False,
+            "error": str(e),
+            "message": "获取生理指标数据失败"
+        }, ensure_ascii=False, indent=2)
+
+
 # 测试函数
 if __name__ == '__main__':
     # 示例：分析今天的生理指标数据

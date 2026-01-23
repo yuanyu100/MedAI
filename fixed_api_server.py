@@ -4,19 +4,27 @@
 import os
 import sys
 import json
+import re
 from datetime import datetime, timedelta, time
 import logging
 import traceback
 from typing import Dict, Optional
 from contextlib import asynccontextmanager
 from langchain.tools import tool, ToolRuntime
+import schedule
+import threading
+import time as time_module
+from collections import Counter
+import math
+import asyncio
 
 # 添加src目录到Python路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
+from typing import List
 import uvicorn
 from langchain_core.messages import HumanMessage
 import pandas as pd
@@ -88,6 +96,66 @@ def convert_to_html(text):
             html_lines.append(f'<p>{formatted_line}</p>')
     
     return ''.join(html_lines)
+
+
+def count_words(text):
+    """统计文本中的单词数量"""
+    if not text:
+        return 0
+    
+    # 移除HTML标签
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    
+    # 分别统计中文字符和英文单词
+    chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', clean_text))
+    english_words = len(re.findall(r'\b[a-zA-Z]+\b', clean_text))
+    
+    return chinese_chars + english_words
+
+
+def limit_report_length(text, max_words=500):
+    """限制报告长度到指定单词数以内"""
+    if not text:
+        return ""
+    
+    words_count = count_words(text)
+    if words_count <= max_words:
+        return text
+    
+    # 移除HTML标签以便于截断
+    clean_text = re.sub(r'<[^>]+>', '', text)
+    
+    # 按句子分割
+    sentences = re.split(r'[。！？.!?]', clean_text)
+    
+    # 逐步添加句子直到接近限制
+    result_parts = []
+    current_count = 0
+    
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+            
+        sentence_word_count = count_words(sentence)
+        if current_count + sentence_word_count <= max_words:
+            result_parts.append(sentence)
+            current_count += sentence_word_count
+        else:
+            # 计算还能容纳多少词
+            remaining_words = max_words - current_count
+            if remaining_words > 0:
+                # 截断当前句子
+                words = re.findall(r'[\u4e00-\u9fff]|\b[a-zA-Z]+\b', sentence)
+                truncated_sentence = ''.join(words[:remaining_words])
+                result_parts.append(truncated_sentence)
+            break
+    
+    # 将文本重新组合
+    result_text = '。'.join(result_parts) + "..."
+    
+    # 再次转换为HTML格式
+    return convert_to_html(result_text)
 
 
 class AgentRequest(BaseModel):
@@ -187,6 +255,247 @@ class SleepAnalysisWithTimeRequest(BaseModel):
     date: str  # 日期格式 YYYY-MM-DD
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
     force_refresh: Optional[bool] = False  # 是否强制刷新，为True时不使用缓存
+
+
+# ========== Pydantic Response Models for Strong Type Validation ==========
+
+# --- Sleep Analysis Response Models ---
+class SleepPhasesModel(BaseModel):
+    """睡眠阶段数据模型"""
+    deep_sleep_minutes: float = Field(default=0, description="深睡时长(分钟)")
+    light_sleep_minutes: float = Field(default=0, description="浅睡时长(分钟)")
+    rem_sleep_minutes: float = Field(default=0, description="REM睡眠时长(分钟)")
+    awake_minutes: float = Field(default=0, description="清醒时长(分钟)")
+    deep_sleep_percentage: float = Field(default=0, ge=0, le=100, description="深睡占比(%)")
+    light_sleep_percentage: float = Field(default=0, ge=0, le=100, description="浅睡占比(%)")
+    rem_sleep_percentage: float = Field(default=0, ge=0, le=100, description="REM占比(%)")
+    awake_percentage: float = Field(default=0, ge=0, le=100, description="清醒占比(%)")
+
+    class Config:
+        extra = "allow"  # 允许额外字段
+
+
+class SleepStageSegmentModel(BaseModel):
+    """睡眠阶段分段模型"""
+    label: str = Field(..., description="睡眠阶段标签(深睡/浅睡/REM/清醒)")
+    value: str = Field(..., description="持续时长(分钟)")
+
+    class Config:
+        extra = "allow"
+
+
+class AverageMetricsModel(BaseModel):
+    """平均生理指标模型"""
+    avg_heart_rate: float = Field(default=0, ge=0, description="平均心率(次/分钟)")
+    avg_respiratory_rate: float = Field(default=0, ge=0, description="平均呼吸率(次/分钟)")
+    avg_body_moves_ratio: float = Field(default=0, ge=0, description="平均体动占比(%)")
+    avg_heartbeat_interval: float = Field(default=0, ge=0, description="平均心跳间期(ms)")
+    avg_rms_heartbeat_interval: float = Field(default=0, ge=0, description="平均心跳间期均方根(ms)")
+
+    class Config:
+        extra = "allow"
+
+
+class SleepAnalysisDataModel(BaseModel):
+    """睡眠分析数据模型"""
+    date: str = Field(..., description="分析日期")
+    bedtime: Optional[str] = Field(default=None, description="上床时间")
+    wakeup_time: Optional[str] = Field(default=None, description="起床时间")
+    time_in_bed_minutes: float = Field(default=0, ge=0, description="在床时长(分钟)")
+    sleep_duration_minutes: float = Field(default=0, ge=0, description="睡眠时长(分钟)")
+    sleep_score: int = Field(default=0, ge=0, le=100, description="睡眠评分")
+    bed_exit_count: int = Field(default=0, ge=0, description="离床次数")
+    sleep_prep_time_minutes: float = Field(default=0, ge=0, description="入睡准备时长(分钟)")
+    sleep_phases: Optional[SleepPhasesModel] = Field(default=None, description="睡眠阶段详情")
+    sleep_stage_segments: Optional[List[SleepStageSegmentModel]] = Field(default=None, description="睡眠阶段分段")
+    average_metrics: Optional[AverageMetricsModel] = Field(default=None, description="平均生理指标")
+    summary: str = Field(default="", description="睡眠质量总结")
+    device_sn: Optional[str] = Field(default=None, description="设备序列号")
+
+    class Config:
+        extra = "allow"
+
+
+class SleepAnalysisResponseModel(BaseModel):
+    """睡眠分析响应模型 - Pydantic强类型校验"""
+    success: bool = Field(..., description="请求是否成功")
+    data: Optional[SleepAnalysisDataModel] = Field(default=None, description="睡眠分析数据")
+    message: Optional[str] = Field(default=None, description="提示信息")
+    error: Optional[str] = Field(default=None, description="错误信息")
+
+    class Config:
+        extra = "forbid"  # 不允许额外字段，严格校验
+
+
+# --- Physiological Analysis Response Models ---
+class HeartRateMetricsModel(BaseModel):
+    """心率指标模型"""
+    avg_heart_rate: float = Field(default=0, ge=0, description="平均心率(次/分钟)")
+    min_heart_rate: float = Field(default=0, ge=0, description="最低心率(次/分钟)")
+    max_heart_rate: float = Field(default=0, ge=0, description="最高心率(次/分钟)")
+    heart_rate_variability: float = Field(default=0, ge=0, description="心率变异性")
+    heart_rate_stability: float = Field(default=0, ge=0, le=100, description="心率稳定性评分")
+
+    class Config:
+        extra = "allow"
+
+
+class RespiratoryMetricsModel(BaseModel):
+    """呼吸指标模型"""
+    avg_respiratory_rate: float = Field(default=0, ge=0, description="平均呼吸率(次/分钟)")
+    min_respiratory_rate: float = Field(default=0, ge=0, description="最低呼吸率(次/分钟)")
+    max_respiratory_rate: float = Field(default=0, ge=0, description="最高呼吸率(次/分钟)")
+    respiratory_stability: float = Field(default=0, ge=0, le=100, description="呼吸稳定性评分")
+    apnea_events_per_hour: float = Field(default=0, ge=0, description="每小时呼吸暂停次数")
+    apnea_count: int = Field(default=0, ge=0, description="呼吸暂停总次数")
+    avg_apnea_duration: float = Field(default=0, ge=0, description="平均呼吸暂停时长(秒)")
+    max_apnea_duration: float = Field(default=0, ge=0, description="最长呼吸暂停时长(秒)")
+
+    class Config:
+        extra = "allow"
+
+
+class SleepMetricsModel(BaseModel):
+    """睡眠质量指标模型"""
+    avg_body_moves_ratio: float = Field(default=0, ge=0, description="平均体动占比(%)")
+    body_movement_frequency: float = Field(default=0, ge=0, description="体动频率(次/小时)")
+    sleep_efficiency: float = Field(default=0, ge=0, le=100, description="睡眠效率(%)")
+
+    class Config:
+        extra = "allow"
+
+
+class PhysiologicalAnalysisDataModel(BaseModel):
+    """生理指标分析数据模型"""
+    date: str = Field(..., description="分析日期")
+    heart_rate_metrics: Optional[HeartRateMetricsModel] = Field(default=None, description="心率指标")
+    respiratory_metrics: Optional[RespiratoryMetricsModel] = Field(default=None, description="呼吸指标")
+    sleep_metrics: Optional[SleepMetricsModel] = Field(default=None, description="睡眠质量指标")
+    summary: str = Field(default="", description="生理指标总结")
+    device_sn: Optional[str] = Field(default=None, description="设备序列号")
+
+    class Config:
+        extra = "allow"
+
+
+class PhysiologicalAnalysisResponseModel(BaseModel):
+    """生理指标分析响应模型 - Pydantic强类型校验"""
+    success: bool = Field(..., description="请求是否成功")
+    data: Optional[PhysiologicalAnalysisDataModel] = Field(default=None, description="生理指标分析数据")
+    message: Optional[str] = Field(default=None, description="提示信息")
+    error: Optional[str] = Field(default=None, description="错误信息")
+
+    class Config:
+        extra = "forbid"  # 不允许额外字段，严格校验
+
+
+# ========== Database Record to Pydantic Model Transformation Functions ==========
+
+def transform_db_record_to_sleep_analysis(db_record: dict, sleep_stage_segments: list = None) -> SleepAnalysisDataModel:
+    """
+    将数据库平铺记录转换为 SleepAnalysisDataModel 嵌套结构
+    
+    Args:
+        db_record: 数据库返回的平铺字典
+        sleep_stage_segments: 睡眠阶段分段列表 (optional)
+    
+    Returns:
+        SleepAnalysisDataModel: 符合Pydantic模型的嵌套结构数据
+    """
+    # 构建 sleep_phases 嵌套结构
+    sleep_phases = SleepPhasesModel(
+        deep_sleep_minutes=float(db_record.get('deep_sleep_minutes', 0) or 0),
+        light_sleep_minutes=float(db_record.get('light_sleep_minutes', 0) or 0),
+        rem_sleep_minutes=float(db_record.get('rem_sleep_minutes', 0) or 0),
+        awake_minutes=float(db_record.get('awake_minutes', 0) or 0),
+        deep_sleep_percentage=float(db_record.get('deep_sleep_percentage', 0) or 0),
+        light_sleep_percentage=float(db_record.get('light_sleep_percentage', 0) or 0),
+        rem_sleep_percentage=float(db_record.get('rem_sleep_percentage', 0) or 0),
+        awake_percentage=float(db_record.get('awake_percentage', 0) or 0)
+    )
+    
+    # 构建 average_metrics 嵌套结构
+    average_metrics = AverageMetricsModel(
+        avg_heart_rate=float(db_record.get('avg_heart_rate', 0) or 0),
+        avg_respiratory_rate=float(db_record.get('avg_respiratory_rate', 0) or 0),
+        avg_body_moves_ratio=float(db_record.get('avg_body_moves_ratio', 0) or 0),
+        avg_heartbeat_interval=float(db_record.get('avg_heartbeat_interval', 0) or 0),
+        avg_rms_heartbeat_interval=float(db_record.get('avg_rms_heartbeat_interval', 0) or 0)
+    )
+    
+    # 构建 sleep_stage_segments 列表
+    segments_list = None
+    if sleep_stage_segments:
+        segments_list = [
+            SleepStageSegmentModel(label=seg['label'], value=str(seg['value']))
+            for seg in sleep_stage_segments
+        ]
+    
+    # 构建主数据模型
+    return SleepAnalysisDataModel(
+        date=str(db_record.get('date', '')),
+        bedtime=db_record.get('bedtime'),
+        wakeup_time=db_record.get('wakeup_time'),
+        time_in_bed_minutes=float(db_record.get('time_in_bed_minutes', 0) or 0),
+        sleep_duration_minutes=float(db_record.get('sleep_duration_minutes', 0) or 0),
+        sleep_score=int(db_record.get('sleep_score', 0) or 0),
+        bed_exit_count=int(db_record.get('bed_exit_count', 0) or 0),
+        sleep_prep_time_minutes=float(db_record.get('sleep_prep_time_minutes', 0) or 0),
+        sleep_phases=sleep_phases,
+        sleep_stage_segments=segments_list,
+        average_metrics=average_metrics,
+        summary=str(db_record.get('summary', '')),
+        device_sn=db_record.get('device_sn')
+    )
+
+
+def transform_db_record_to_physiological_analysis(db_record: dict) -> PhysiologicalAnalysisDataModel:
+    """
+    将数据库平铺记录转换为 PhysiologicalAnalysisDataModel 嵌套结构
+    
+    Args:
+        db_record: 数据库返回的平铺字典
+    
+    Returns:
+        PhysiologicalAnalysisDataModel: 符合Pydantic模型的嵌套结构数据
+    """
+    # 构建 heart_rate_metrics 嵌套结构
+    heart_rate_metrics = HeartRateMetricsModel(
+        avg_heart_rate=float(db_record.get('avg_heart_rate', 0) or 0),
+        min_heart_rate=float(db_record.get('min_heart_rate', 0) or 0),
+        max_heart_rate=float(db_record.get('max_heart_rate', 0) or 0),
+        heart_rate_variability=float(db_record.get('heart_rate_variability', 0) or 0),
+        heart_rate_stability=float(db_record.get('heart_rate_stability', 0) or 0)
+    )
+    
+    # 构建 respiratory_metrics 嵌套结构
+    respiratory_metrics = RespiratoryMetricsModel(
+        avg_respiratory_rate=float(db_record.get('avg_respiratory_rate', 0) or 0),
+        min_respiratory_rate=float(db_record.get('min_respiratory_rate', 0) or 0),
+        max_respiratory_rate=float(db_record.get('max_respiratory_rate', 0) or 0),
+        respiratory_stability=float(db_record.get('respiratory_stability', 0) or 0),
+        apnea_events_per_hour=float(db_record.get('apnea_events_per_hour', 0) or 0),
+        apnea_count=int(db_record.get('apnea_count', 0) or 0),
+        avg_apnea_duration=float(db_record.get('avg_apnea_duration', 0) or 0),
+        max_apnea_duration=float(db_record.get('max_apnea_duration', 0) or 0)
+    )
+    
+    # 构建 sleep_metrics 嵌套结构
+    sleep_metrics = SleepMetricsModel(
+        avg_body_moves_ratio=float(db_record.get('avg_body_moves_ratio', 0) or 0),
+        body_movement_frequency=float(db_record.get('body_movement_frequency', 0) or 0),
+        sleep_efficiency=float(db_record.get('sleep_efficiency', 0) or 0)
+    )
+    
+    # 构建主数据模型
+    return PhysiologicalAnalysisDataModel(
+        date=str(db_record.get('date', '')),
+        heart_rate_metrics=heart_rate_metrics,
+        respiratory_metrics=respiratory_metrics,
+        sleep_metrics=sleep_metrics,
+        summary=str(db_record.get('summary', '')),
+        device_sn=db_record.get('device_sn')
+    )
 
 
 # 删除重复的SleepAnalysisWithTimeRequest定义
@@ -636,6 +945,41 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
     try:
         print(f"🤖 运行AI分析: {request.date}, 强制刷新: {request.force_refresh}")
         
+        # 首先检查数据可用性
+        from src.tools.sleep_data_checker_tool import check_detailed_sleep_data_with_device
+        
+        # 根据是否有设备序列号来决定使用哪个函数
+        if request.device_sn:
+            check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
+        else:
+            from src.tools.sleep_data_checker_tool import check_detailed_sleep_data
+            check_result = check_detailed_sleep_data(request.date)
+        
+        check_data = json.loads(check_result)
+        has_data = check_data.get('data', {}).get('has_sleep_data', False)
+        
+        if not has_data:
+            print(f"⚠️ 未找到 {request.date} 的睡眠数据，尝试补偿机制...")
+            # 实施补偿机制：尝试触发数据收集
+            await trigger_data_collection(request.date, request.device_sn)
+            
+            # 再次检查数据是否可用
+            if request.device_sn:
+                check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
+            else:
+                check_result = check_detailed_sleep_data(request.date)
+            
+            check_data = json.loads(check_result)
+            has_data = check_data.get('data', {}).get('has_sleep_data', False)
+            
+            if not has_data:
+                return {
+                    "success": True,
+                    "data": "</strong>当前日期没有可用的睡眠数据。请确保设备已收集相应数据后再进行分析。</p>",
+                    "warning": "无可用数据",
+                    "has_data": False
+                }
+        
         # 使用改进的智能体运行分析，包含格式化的睡眠时间信息
         from improved_agent import run_improved_agent
         result = run_improved_agent(
@@ -649,10 +993,15 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
         # logger.debug(f"AI analysis result: {result}")
         
         # 将结果转换为HTML格式
-        # 由于结果已经是文本格式，我们可以直接返回
+        html_result = convert_to_html(result)
+        
+        # 限制报告长度到500词以内
+        limited_html_result = limit_report_length(html_result, max_words=500)
+        
         return {
             "success": True,
-            "data": result
+            "data": limited_html_result,
+            "has_data": True
         }
 
     except Exception as e:
@@ -664,6 +1013,44 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
             "error": str(e),
             "message": "AI分析失败"
         }
+
+
+async def trigger_data_collection(date: str, device_sn: str = None):
+    """触发数据收集补偿机制"""
+    print(f"🔄 尝试触发数据收集 for {date}, device: {device_sn}")
+    
+    # 这里可以实现数据收集的具体逻辑
+    # 比如调用数据采集API、从外部设备同步数据等
+    # 目前只是占位符
+    try:
+        # 示例：调用数据库工具检查可用数据
+        from src.tools.database_tool import get_available_sleep_dates
+        result = get_available_sleep_dates()
+        print(f"📊 可用数据日期: {result}")
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ 数据收集补偿机制执行失败: {str(e)}")
+        return False
+
+
+def trigger_data_collection_sync(date: str, device_sn: str = None):
+    """同步版本的触发数据收集补偿机制，用于定时任务"""
+    print(f"🔄 尝试触发数据收集 for {date}, device: {device_sn}")
+    
+    # 这里可以实现数据收集的具体逻辑
+    # 比如调用数据采集API、从外部设备同步数据等
+    # 目前只是占位符
+    try:
+        # 示例：调用数据库工具检查可用数据
+        from src.tools.database_tool import get_available_sleep_dates
+        result = get_available_sleep_dates()
+        print(f"📊 可用数据日期: {result}")
+        
+        return True
+    except Exception as e:
+        print(f"⚠️ 数据收集补偿机制执行失败: {str(e)}")
+        return False
 
 
 # @app.post("/analysis/database")
@@ -763,44 +1150,64 @@ async def analyze_trend_data(request: PDFTrendRequest):
         })
 
 
-@app.post("/sleep-analysis")
-async def analyze_sleep(request: SleepAnalysisRequest):
-    """睡眠分析"""
+@app.post("/sleep-analysis", response_model=SleepAnalysisResponseModel)
+async def analyze_sleep(request: SleepAnalysisRequest) -> SleepAnalysisResponseModel:
+    """睡眠分析 - 使用Pydantic强类型校验返回结果"""
     try:
         print(f"😴 睡眠分析: {request.date}, 设备: {request.device_sn}")
         
-        # 根据是否有设备序列号来决定使用哪个函数
+        # 首先尝试从数据库获取已存储的分析结果
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        stored_data_raw = db_manager.get_calculated_sleep_data(request.date, request.device_sn)
+        
+        # 检查数据库是否有已存储的结果，并检查睡眠分析数据是否已填充
+        if not stored_data_raw.empty:
+            stored_record = stored_data_raw.to_dict('records')[0]
+            
+            # 检查bedtime是否不为None（哨兵字段，表示睡眠分析已执行）
+            # 如果bedtime为None，说明睡眠分析还没执行过，需要重新计算
+            if stored_record.get('bedtime') is not None:
+                # 从数据库读取并转换为Pydantic模型结构
+                # 获取sleep_stage_segments
+                segments_raw = db_manager.get_sleep_stage_segments(request.date, request.device_sn)
+                sleep_stage_segments = None
+                if not segments_raw.empty:
+                    sleep_stage_segments = segments_raw.to_dict('records')
+                
+                # 使用转换函数将平铺DB记录转换为嵌套Pydantic模型
+                data_model = transform_db_record_to_sleep_analysis(stored_record, sleep_stage_segments)
+                
+                return SleepAnalysisResponseModel(
+                    success=True,
+                    data=data_model
+                )
+        
+        # 数据库中没有数据，调用分析工具生成新数据
         if request.device_sn:
-            # 使用带设备过滤的函数
             result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
         else:
-            # 使用原有函数
             result = analyze_single_day_sleep_data(request.date, "vital_signs")
         
-        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         result_dict = json.loads(result)
         
-        # 如果工具返回的是错误格式，需要正确处理
-        if result_dict.get("success") is False:
-            # 工具已经返回了完整的错误响应
-            # 但我们需要移除timestamp字段
-            filtered_result = {
-                "success": result_dict.get("success"),
-                "data": result_dict.get("data"),
-                "error": result_dict.get("error"),
-                "message": result_dict.get("message")
-            }
-            # 只保留非None的字段
-            return {k: v for k, v in filtered_result.items() if v is not None}
+        # 如果工具成功，存储结果到数据库
+        if result_dict.get("success") and result_dict.get("data"):
+            db_manager.store_calculated_sleep_data(result_dict.get("data", {}))
         
-        # 如果工具成功，返回其数据部分但移除timestamp字段
-        filtered_result = {
-            "success": result_dict.get("success"),
-            "data": result_dict.get("data"),
-            "message": result_dict.get("message")
-        }
-        # 只保留非None的字段
-        return {k: v for k, v in filtered_result.items() if v is not None}
+        # 返回结果（工具函数已经返回正确的嵌套结构）
+        if result_dict.get("success") is False:
+            return SleepAnalysisResponseModel(
+                success=False,
+                error=result_dict.get("error"),
+                message=result_dict.get("message")
+            )
+        
+        return SleepAnalysisResponseModel(
+            success=True,
+            data=result_dict.get("data"),
+            message=result_dict.get("message")
+        )
         
     except Exception as e:
         print(f"❌ 睡眠分析失败: {str(e)}")
@@ -812,46 +1219,58 @@ async def analyze_sleep(request: SleepAnalysisRequest):
         })
 
 
-@app.post("/physiological-analysis")
-async def analyze_physiological(request: PhysiologicalAnalysisRequest):
-    """生理指标分析"""
+@app.post("/physiological-analysis", response_model=PhysiologicalAnalysisResponseModel)
+async def analyze_physiological(request: PhysiologicalAnalysisRequest) -> PhysiologicalAnalysisResponseModel:
+    """生理指标分析 - 使用Pydantic强类型校验返回结果"""
     try:
         print(f"📊 生理指标分析: {request.date}, 设备: {request.device_sn}")
         
-        # 根据是否有设备序列号来决定使用哪个函数
+        # 首先尝试从数据库获取已存储的分析结果
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        stored_data_raw = db_manager.get_calculated_sleep_data(request.date, request.device_sn)
+        
+        # 检查数据库是否有已存储的结果，并检查生理指标数据是否已填充
+        if not stored_data_raw.empty:
+            stored_record = stored_data_raw.to_dict('records')[0]
+            
+            # 检查heart_rate_variability是否不为0（哨兵字段，表示生理分析已执行）
+            if stored_record.get('heart_rate_variability', 0) != 0:
+                # 使用转换函数将平铺DB记录转换为嵌套Pydantic模型
+                data_model = transform_db_record_to_physiological_analysis(stored_record)
+                
+                return PhysiologicalAnalysisResponseModel(
+                    success=True,
+                    data=data_model
+                )
+        
+        # 数据库中没有数据或生理指标未填充，调用分析工具生成新数据
         if request.device_sn:
-            # 使用带设备过滤的函数
             from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
             result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
         else:
-            # 使用原有函数
             from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data
             result = analyze_single_day_physiological_data(request.date, "vital_signs")
         
-        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         result_dict = json.loads(result)
         
-        # 如果工具返回的是错误格式，需要正确处理
-        if result_dict.get("success") is False:
-            # 工具已经返回了完整的错误响应
-            # 但我们需要移除timestamp字段
-            filtered_result = {
-                "success": result_dict.get("success"),
-                "data": result_dict.get("data"),
-                "error": result_dict.get("error"),
-                "message": result_dict.get("message")
-            }
-            # 只保留非None的字段
-            return {k: v for k, v in filtered_result.items() if v is not None}
+        # 如果工具成功，存储结果到数据库
+        if result_dict.get("success") and result_dict.get("data"):
+            db_manager.store_calculated_sleep_data(result_dict.get("data", {}))
         
-        # 如果工具成功，返回其数据部分但移除timestamp字段
-        filtered_result = {
-            "success": result_dict.get("success"),
-            "data": result_dict.get("data"),
-            "message": result_dict.get("message")
-        }
-        # 只保留非None的字段
-        return {k: v for k, v in filtered_result.items() if v is not None}
+        # 返回结果（工具函数已经返回正确的嵌套结构）
+        if result_dict.get("success") is False:
+            return PhysiologicalAnalysisResponseModel(
+                success=False,
+                error=result_dict.get("error"),
+                message=result_dict.get("message")
+            )
+        
+        return PhysiologicalAnalysisResponseModel(
+            success=True,
+            data=result_dict.get("data"),
+            message=result_dict.get("message")
+        )
         
     except Exception as e:
         print(f"❌ 生理指标分析失败: {str(e)}")
@@ -1327,8 +1746,60 @@ def generate_comprehensive_report(sleep_data: dict, physio_data: dict, date: str
     return report
 
 
+def run_scheduler():
+    """运行调度器，在后台执行定时任务"""
+    def scheduled_analysis():
+        """执行定时分析任务"""
+        try:
+            print(f"⏰ 执行每日定时AI分析任务: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+            
+            # 获取当前日期
+            current_date = datetime.now().strftime('%Y-%m-%d')
+            
+            # 检查当前日期是否有睡眠数据
+            from src.tools.sleep_data_checker_tool import check_detailed_sleep_data
+            check_result = check_detailed_sleep_data(current_date)
+            check_data = json.loads(check_result)
+            has_data = check_data.get('data', {}).get('has_sleep_data', False)
+            
+            if has_data:
+                print(f"✅ {current_date} 存在睡眠数据，开始AI分析...")
+                
+                # 使用改进的智能体运行分析
+                from improved_agent import run_improved_agent
+                result = run_improved_agent(
+                    current_date, 
+                    thread_id=f"scheduled_ai_analysis_{current_date}", 
+                    force_refresh=False,
+                    include_formatted_time=True
+                )
+                
+                print(f"✅ 定时AI分析完成")
+            else:
+                print(f"⚠️ {current_date} 不存在睡眠数据，跳过AI分析")
+                # 尝试触发数据收集
+                trigger_data_collection_sync(current_date)
+                
+        except Exception as e:
+            print(f"❌ 定时AI分析任务失败: {str(e)}")
+            import traceback
+            traceback.print_exc()
+    
+    # 每天上午10点执行任务
+    schedule.every().day.at("10:00").do(scheduled_analysis)
+    
+    print("⏰ 调度器已启动，等待定时任务执行...")
+    while True:
+        schedule.run_pending()
+        time_module.sleep(60)  # 每分钟检查一次
+
+
 def start_server(host: str = "0.0.0.0", port: int = 8080, reload: bool = False):
     """启动API服务器"""
+    # 启动调度器作为后台线程
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    
     print(f"🌐 启动修复版API服务器在 {host}:{port}")
     import uvicorn
     if reload:

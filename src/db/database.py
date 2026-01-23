@@ -358,6 +358,382 @@ class DatabaseManager:
         except Exception as e:
             # 如果索引创建失败（可能是权限问题等），不影响主流程
             print(f"创建索引时出错（可忽略）: {e}")
+
+
+    def create_calculated_sleep_data_table(self):
+        """创建用于存储计算得出的睡眠数据的表"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS calculated_sleep_data (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            date DATE NOT NULL COMMENT '日期',
+            device_sn VARCHAR(100) COMMENT '设备序列号',
+            bedtime DATETIME COMMENT '就寝时间',
+            wakeup_time DATETIME COMMENT '起床时间',
+            time_in_bed_minutes DECIMAL(10,2) DEFAULT 0 COMMENT '卧床时间（分钟）',
+            sleep_duration_minutes DECIMAL(10,2) DEFAULT 0 COMMENT '睡眠时长（分钟）',
+            sleep_score INT DEFAULT 0 COMMENT '睡眠评分',
+            bed_exit_count INT DEFAULT 0 COMMENT '离床次数',
+            sleep_prep_time_minutes INT DEFAULT 0 COMMENT '睡眠准备时间（分钟）',
+            deep_sleep_minutes INT DEFAULT 0 COMMENT '深睡时长（分钟）',
+            light_sleep_minutes INT DEFAULT 0 COMMENT '浅睡时长（分钟）',
+            rem_sleep_minutes INT DEFAULT 0 COMMENT 'REM睡眠时长（分钟）',
+            awake_minutes INT DEFAULT 0 COMMENT '清醒时长（分钟）',
+            deep_sleep_percentage DECIMAL(5,2) DEFAULT 0 COMMENT '深睡占比（百分比）',
+            light_sleep_percentage DECIMAL(5,2) DEFAULT 0 COMMENT '浅睡占比（百分比）',
+            rem_sleep_percentage DECIMAL(5,2) DEFAULT 0 COMMENT 'REM睡眠占比（百分比）',
+            awake_percentage DECIMAL(5,2) DEFAULT 0 COMMENT '清醒占比（百分比）',
+            avg_heart_rate DECIMAL(5,2) DEFAULT 0 COMMENT '平均心率',
+            avg_respiratory_rate DECIMAL(5,2) DEFAULT 0 COMMENT '平均呼吸率',
+            min_heart_rate DECIMAL(5,2) DEFAULT 0 COMMENT '最低心率',
+            max_heart_rate DECIMAL(5,2) DEFAULT 0 COMMENT '最高心率',
+            min_respiratory_rate DECIMAL(5,2) DEFAULT 0 COMMENT '最低呼吸率',
+            max_respiratory_rate DECIMAL(5,2) DEFAULT 0 COMMENT '最高呼吸率',
+            apnea_count DECIMAL(10,2) DEFAULT 0 COMMENT '呼吸暂停次数',
+            max_apnea_duration_seconds DECIMAL(10,2) DEFAULT 0 COMMENT '最长呼吸暂停时长（秒）',
+            avg_apnea_duration_seconds DECIMAL(10,2) DEFAULT 0 COMMENT '平均呼吸暂停时长（秒）',
+            respiratory_health_score DECIMAL(5,2) DEFAULT 0 COMMENT '呼吸健康评分',
+            hrv_score DECIMAL(5,2) DEFAULT 0 COMMENT 'HRV分数',
+            heart_rate_variability DECIMAL(10,2) DEFAULT 0 COMMENT '心率变异性原始值',
+            heart_rate_stability DECIMAL(10,2) DEFAULT 0 COMMENT '心率稳定性评分',
+            respiratory_stability DECIMAL(10,2) DEFAULT 0 COMMENT '呼吸稳定性评分',
+            apnea_events_per_hour DECIMAL(10,2) DEFAULT 0 COMMENT '每小时呼吸暂停事件数',
+            avg_body_moves_ratio DECIMAL(10,2) DEFAULT 0 COMMENT '平均体动占比',
+            body_movement_frequency DECIMAL(10,2) DEFAULT 0 COMMENT '体动频率',
+            sleep_efficiency DECIMAL(5,2) DEFAULT 0 COMMENT '睡眠效率百分比',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            UNIQUE KEY uk_date_device (date, device_sn)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """
+        self.execute_command(create_table_sql)
+        
+        # 为已存在的表添加新列（如果列不存在）
+        self._add_column_if_not_exists('calculated_sleep_data', 'heart_rate_variability', 'DECIMAL(10,2) DEFAULT 0 COMMENT \'心率变异性原始值\'')
+        self._add_column_if_not_exists('calculated_sleep_data', 'heart_rate_stability', 'DECIMAL(10,2) DEFAULT 0 COMMENT \'心率稳定性评分\'')
+        self._add_column_if_not_exists('calculated_sleep_data', 'respiratory_stability', 'DECIMAL(10,2) DEFAULT 0 COMMENT \'呼吸稳定性评分\'')
+        self._add_column_if_not_exists('calculated_sleep_data', 'apnea_events_per_hour', 'DECIMAL(10,2) DEFAULT 0 COMMENT \'每小时呼吸暂停事件数\'')
+        self._add_column_if_not_exists('calculated_sleep_data', 'avg_body_moves_ratio', 'DECIMAL(10,2) DEFAULT 0 COMMENT \'平均体动占比\'')
+        self._add_column_if_not_exists('calculated_sleep_data', 'body_movement_frequency', 'DECIMAL(10,2) DEFAULT 0 COMMENT \'体动频率\'')
+        self._add_column_if_not_exists('calculated_sleep_data', 'sleep_efficiency', 'DECIMAL(5,2) DEFAULT 0 COMMENT \'睡眠效率百分比\'')
+    
+    def _add_column_if_not_exists(self, table_name: str, column_name: str, column_definition: str):
+        """如果列不存在则添加列"""
+        try:
+            check_sql = f"""
+            SELECT COUNT(*) as cnt FROM information_schema.columns 
+            WHERE table_schema = DATABASE() 
+            AND table_name = '{table_name}' 
+            AND column_name = '{column_name}'
+            """
+            result = self.execute_query(check_sql)
+            if result.iloc[0]['cnt'] == 0:
+                alter_sql = f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_definition}"
+                self.execute_command(alter_sql)
+        except Exception as e:
+            # 忽略添加列时的错误（可能是列已存在）
+            pass
+
+
+    def create_sleep_stage_segments_table(self):
+        """创建用于存储睡眠阶段细分数据的表"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS sleep_stage_segments (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            date DATE NOT NULL COMMENT '日期',
+            device_sn VARCHAR(100) COMMENT '设备序列号',
+            segment_order INT NOT NULL COMMENT '时间段顺序',
+            label VARCHAR(20) NOT NULL COMMENT '睡眠阶段标签',
+            value VARCHAR(20) NOT NULL COMMENT '时间段值（分钟）',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            UNIQUE KEY uk_date_device_order (date, device_sn, segment_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """
+        self.execute_command(create_table_sql)
+
+
+    def store_sleep_stage_segments(self, date: str, device_sn: str, segments: list):
+        """存储睡眠阶段细分数据"""
+        # 首先创建表（如果不存在）
+        self.create_sleep_stage_segments_table()
+        
+        # 如果segments为空，则不执行任何操作
+        if not segments:
+            return
+        
+        # 清除旧的细分数据
+        delete_sql = """
+        DELETE FROM sleep_stage_segments 
+        WHERE date = :date AND device_sn = :device_sn
+        """
+        delete_params = {'date': date, 'device_sn': device_sn}
+        self.execute_command(delete_sql, delete_params)
+        
+        # 插入新的细分数据
+        if segments:
+            for idx, segment in enumerate(segments):
+                insert_sql = """
+                INSERT INTO sleep_stage_segments (
+                    date, device_sn, segment_order, label, value
+                ) VALUES (
+                    :date, :device_sn, :segment_order, :label, :value
+                )
+                """
+                insert_params = {
+                    'date': date,
+                    'device_sn': device_sn,
+                    'segment_order': idx + 1,  # 从1开始计数
+                    'label': segment.get('label', ''),
+                    'value': str(segment.get('value', '0'))
+                }
+                self.execute_command(insert_sql, insert_params)
+
+
+    def get_sleep_stage_segments(self, date: str, device_sn: str = None):
+        """获取睡眠阶段细分数据"""
+        # 首先确保表存在
+        self.create_sleep_stage_segments_table()
+        
+        if device_sn:
+            query = """
+            SELECT * FROM sleep_stage_segments 
+            WHERE date = :date AND device_sn = :device_sn
+            ORDER BY segment_order ASC
+            """
+            params = {'date': date, 'device_sn': device_sn}
+        else:
+            query = """
+            SELECT * FROM sleep_stage_segments 
+            WHERE date = :date
+            ORDER BY segment_order ASC
+            """
+            params = {'date': date}
+        
+        result = self.execute_query(query, params)
+        return result
+
+
+    def store_calculated_sleep_data(self, sleep_data: dict):
+        """存储计算得出的睡眠数据"""
+        # 首先创建表（如果不存在）
+        self.create_calculated_sleep_data_table()
+        
+        # 准备插入数据
+        insert_sql = """
+        INSERT INTO calculated_sleep_data (
+            date, device_sn, bedtime, wakeup_time, 
+            time_in_bed_minutes, sleep_duration_minutes, sleep_score, bed_exit_count, 
+            sleep_prep_time_minutes, deep_sleep_minutes, light_sleep_minutes, 
+            rem_sleep_minutes, awake_minutes, deep_sleep_percentage, 
+            light_sleep_percentage, rem_sleep_percentage, awake_percentage,
+            avg_heart_rate, avg_respiratory_rate, min_heart_rate, max_heart_rate,
+            min_respiratory_rate, max_respiratory_rate, apnea_count,
+            max_apnea_duration_seconds, avg_apnea_duration_seconds, respiratory_health_score, hrv_score,
+            heart_rate_variability, heart_rate_stability, respiratory_stability,
+            apnea_events_per_hour, avg_body_moves_ratio, body_movement_frequency, sleep_efficiency
+        ) VALUES (
+            :date, :device_sn, :bedtime, :wakeup_time,
+            :time_in_bed_minutes, :sleep_duration_minutes, :sleep_score, :bed_exit_count,
+            :sleep_prep_time_minutes, :deep_sleep_minutes, :light_sleep_minutes,
+            :rem_sleep_minutes, :awake_minutes, :deep_sleep_percentage,
+            :light_sleep_percentage, :rem_sleep_percentage, :awake_percentage,
+            :avg_heart_rate, :avg_respiratory_rate, :min_heart_rate, :max_heart_rate,
+            :min_respiratory_rate, :max_respiratory_rate, :apnea_count,
+            :max_apnea_duration_seconds, :avg_apnea_duration_seconds, :respiratory_health_score, :hrv_score,
+            :heart_rate_variability, :heart_rate_stability, :respiratory_stability,
+            :apnea_events_per_hour, :avg_body_moves_ratio, :body_movement_frequency, :sleep_efficiency
+        )
+        ON DUPLICATE KEY UPDATE
+            -- 睡眠分析专属字段: 只在 bedtime 不为NULL时更新（表示这是/sleep-analysis调用）
+            bedtime = IF(VALUES(bedtime) IS NOT NULL, VALUES(bedtime), bedtime),
+            wakeup_time = IF(VALUES(bedtime) IS NOT NULL, VALUES(wakeup_time), wakeup_time),
+            time_in_bed_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(time_in_bed_minutes), time_in_bed_minutes),
+            sleep_duration_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(sleep_duration_minutes), sleep_duration_minutes),
+            sleep_score = IF(VALUES(bedtime) IS NOT NULL, VALUES(sleep_score), sleep_score),
+            bed_exit_count = IF(VALUES(bedtime) IS NOT NULL, VALUES(bed_exit_count), bed_exit_count),
+            sleep_prep_time_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(sleep_prep_time_minutes), sleep_prep_time_minutes),
+            deep_sleep_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(deep_sleep_minutes), deep_sleep_minutes),
+            light_sleep_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(light_sleep_minutes), light_sleep_minutes),
+            rem_sleep_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(rem_sleep_minutes), rem_sleep_minutes),
+            awake_minutes = IF(VALUES(bedtime) IS NOT NULL, VALUES(awake_minutes), awake_minutes),
+            deep_sleep_percentage = IF(VALUES(bedtime) IS NOT NULL, VALUES(deep_sleep_percentage), deep_sleep_percentage),
+            light_sleep_percentage = IF(VALUES(bedtime) IS NOT NULL, VALUES(light_sleep_percentage), light_sleep_percentage),
+            rem_sleep_percentage = IF(VALUES(bedtime) IS NOT NULL, VALUES(rem_sleep_percentage), rem_sleep_percentage),
+            awake_percentage = IF(VALUES(bedtime) IS NOT NULL, VALUES(awake_percentage), awake_percentage),
+            -- 生理分析专属字段: 只在 heart_rate_variability != 0 时更新（表示这是/physiological-analysis调用）
+            heart_rate_variability = IF(VALUES(heart_rate_variability) != 0, VALUES(heart_rate_variability), heart_rate_variability),
+            heart_rate_stability = IF(VALUES(heart_rate_variability) != 0, VALUES(heart_rate_stability), heart_rate_stability),
+            respiratory_stability = IF(VALUES(heart_rate_variability) != 0, VALUES(respiratory_stability), respiratory_stability),
+            apnea_events_per_hour = IF(VALUES(heart_rate_variability) != 0, VALUES(apnea_events_per_hour), apnea_events_per_hour),
+            body_movement_frequency = IF(VALUES(heart_rate_variability) != 0, VALUES(body_movement_frequency), body_movement_frequency),
+            sleep_efficiency = IF(VALUES(heart_rate_variability) != 0, VALUES(sleep_efficiency), sleep_efficiency),
+            -- 共享字段: 只要新值不为0就更新（两个接口都可能提供）
+            avg_heart_rate = IF(VALUES(avg_heart_rate) != 0, VALUES(avg_heart_rate), avg_heart_rate),
+            avg_respiratory_rate = IF(VALUES(avg_respiratory_rate) != 0, VALUES(avg_respiratory_rate), avg_respiratory_rate),
+            min_heart_rate = IF(VALUES(min_heart_rate) != 0, VALUES(min_heart_rate), min_heart_rate),
+            max_heart_rate = IF(VALUES(max_heart_rate) != 0, VALUES(max_heart_rate), max_heart_rate),
+            min_respiratory_rate = IF(VALUES(min_respiratory_rate) != 0, VALUES(min_respiratory_rate), min_respiratory_rate),
+            max_respiratory_rate = IF(VALUES(max_respiratory_rate) != 0, VALUES(max_respiratory_rate), max_respiratory_rate),
+            apnea_count = IF(VALUES(apnea_count) != 0, VALUES(apnea_count), apnea_count),
+            max_apnea_duration_seconds = IF(VALUES(max_apnea_duration_seconds) != 0, VALUES(max_apnea_duration_seconds), max_apnea_duration_seconds),
+            avg_apnea_duration_seconds = IF(VALUES(avg_apnea_duration_seconds) != 0, VALUES(avg_apnea_duration_seconds), avg_apnea_duration_seconds),
+            respiratory_health_score = IF(VALUES(respiratory_health_score) != 0, VALUES(respiratory_health_score), respiratory_health_score),
+            hrv_score = IF(VALUES(hrv_score) != 0, VALUES(hrv_score), hrv_score),
+            avg_body_moves_ratio = IF(VALUES(avg_body_moves_ratio) != 0, VALUES(avg_body_moves_ratio), avg_body_moves_ratio),
+            updated_at = CURRENT_TIMESTAMP
+        """
+        
+        # 提取睡眠数据中的各个字段
+        date = sleep_data.get('date')
+        device_sn = sleep_data.get('device_sn', '')
+        bedtime = sleep_data.get('bedtime')
+        wakeup_time = sleep_data.get('wakeup_time')
+        time_in_bed_minutes = sleep_data.get('time_in_bed_minutes', 0)
+        sleep_duration_minutes = sleep_data.get('sleep_duration_minutes', 0)
+        sleep_score = sleep_data.get('sleep_score', 0)
+        bed_exit_count = sleep_data.get('bed_exit_count', 0)
+        sleep_prep_time_minutes = sleep_data.get('sleep_prep_time_minutes', 0)
+        
+        # 从sleep_phases中提取数据
+        sleep_phases = sleep_data.get('sleep_phases', {})
+        deep_sleep_minutes = sleep_phases.get('deep_sleep_minutes', 0)
+        light_sleep_minutes = sleep_phases.get('light_sleep_minutes', 0)
+        rem_sleep_minutes = sleep_phases.get('rem_sleep_minutes', 0)
+        awake_minutes = sleep_phases.get('awake_minutes', 0)
+        deep_sleep_percentage = sleep_phases.get('deep_sleep_percentage', 0)
+        light_sleep_percentage = sleep_phases.get('light_sleep_percentage', 0)
+        rem_sleep_percentage = sleep_phases.get('rem_sleep_percentage', 0)
+        awake_percentage = sleep_phases.get('awake_percentage', 0)
+        
+        # 从average_metrics中提取数据
+        average_metrics = sleep_data.get('average_metrics', {})
+        avg_heart_rate = average_metrics.get('avg_heart_rate', 0)
+        avg_respiratory_rate = average_metrics.get('avg_respiratory_rate', 0)
+        min_heart_rate = average_metrics.get('min_heart_rate', 0)
+        max_heart_rate = average_metrics.get('max_heart_rate', 0)
+        
+        # 从呼吸指标respiratory_metrics中提取数据（如果有的话）
+        respiratory_metrics = sleep_data.get('respiratory_metrics', {})
+        min_respiratory_rate = respiratory_metrics.get('min_respiratory_rate', 0)
+        max_respiratory_rate = respiratory_metrics.get('max_respiratory_rate', 0)
+        apnea_count = respiratory_metrics.get('apnea_count', 0)
+        max_apnea_duration_seconds = respiratory_metrics.get('max_apnea_duration_seconds', 0) or respiratory_metrics.get('max_apnea_duration', 0)
+        avg_apnea_duration_seconds = respiratory_metrics.get('avg_apnea_duration_seconds', 0) or respiratory_metrics.get('avg_apnea_duration', 0)
+        respiratory_health_score = respiratory_metrics.get('respiratory_health_score', 0)
+        respiratory_stability = respiratory_metrics.get('respiratory_stability', 0)
+        apnea_events_per_hour = respiratory_metrics.get('apnea_events_per_hour', 0)
+        
+        # 从心率指标heart_rate_metrics中提取数据（如果有的话）
+        heart_rate_metrics = sleep_data.get('heart_rate_metrics', {})
+        hrv_score = heart_rate_metrics.get('hrv_score', 0)
+        heart_rate_variability = heart_rate_metrics.get('heart_rate_variability', 0)
+        heart_rate_stability = heart_rate_metrics.get('heart_rate_stability', 0)
+        # 也尝试从 heart_rate_metrics 中获取心率数据（PhysiologicalAnalysisResponse的结构）
+        if not avg_heart_rate and heart_rate_metrics:
+            avg_heart_rate = heart_rate_metrics.get('avg_heart_rate', 0)
+            min_heart_rate = heart_rate_metrics.get('min_heart_rate', 0)
+            max_heart_rate = heart_rate_metrics.get('max_heart_rate', 0)
+        
+        # 从睡眠指标sleep_metrics中提取数据（PhysiologicalAnalysisResponse特有）
+        sleep_metrics = sleep_data.get('sleep_metrics', {})
+        avg_body_moves_ratio = sleep_metrics.get('avg_body_moves_ratio', 0) or average_metrics.get('avg_body_moves_ratio', 0)
+        body_movement_frequency = sleep_metrics.get('body_movement_frequency', 0)
+        sleep_efficiency = sleep_metrics.get('sleep_efficiency', 0)
+        
+        params = {
+            'date': date,
+            'device_sn': device_sn,
+            'bedtime': bedtime,
+            'wakeup_time': wakeup_time,
+            'time_in_bed_minutes': time_in_bed_minutes,
+            'sleep_duration_minutes': sleep_duration_minutes,
+            'sleep_score': sleep_score,
+            'bed_exit_count': bed_exit_count,
+            'sleep_prep_time_minutes': sleep_prep_time_minutes,
+            'deep_sleep_minutes': deep_sleep_minutes,
+            'light_sleep_minutes': light_sleep_minutes,
+            'rem_sleep_minutes': rem_sleep_minutes,
+            'awake_minutes': awake_minutes,
+            'deep_sleep_percentage': deep_sleep_percentage,
+            'light_sleep_percentage': light_sleep_percentage,
+            'rem_sleep_percentage': rem_sleep_percentage,
+            'awake_percentage': awake_percentage,
+            'avg_heart_rate': avg_heart_rate,
+            'avg_respiratory_rate': avg_respiratory_rate,
+            'min_heart_rate': min_heart_rate,
+            'max_heart_rate': max_heart_rate,
+            'min_respiratory_rate': min_respiratory_rate,
+            'max_respiratory_rate': max_respiratory_rate,
+            'apnea_count': apnea_count,
+            'max_apnea_duration_seconds': max_apnea_duration_seconds,
+            'avg_apnea_duration_seconds': avg_apnea_duration_seconds,
+            'respiratory_health_score': respiratory_health_score,
+            'hrv_score': hrv_score,
+            'heart_rate_variability': heart_rate_variability,
+            'heart_rate_stability': heart_rate_stability,
+            'respiratory_stability': respiratory_stability,
+            'apnea_events_per_hour': apnea_events_per_hour,
+            'avg_body_moves_ratio': avg_body_moves_ratio,
+            'body_movement_frequency': body_movement_frequency,
+            'sleep_efficiency': sleep_efficiency
+        }
+        
+        # 执行INSERT语句存储主表数据
+        self.execute_command(insert_sql, params)
+        
+        # 如果有sleep_stage_segments，也存储它们到单独的表
+        sleep_stage_segments = sleep_data.get('sleep_stage_segments', [])
+        if sleep_stage_segments and date and device_sn:
+            self.store_sleep_stage_segments(date, device_sn, sleep_stage_segments)
+
+
+    def get_calculated_sleep_data(self, date: str, device_sn: str = None):
+        """获取计算得出的睡眠数据，包括睡眠阶段细分数据"""
+        # 首先确保表存在
+        self.create_calculated_sleep_data_table()
+        
+        if device_sn:
+            query = """
+            SELECT * FROM calculated_sleep_data 
+            WHERE date = :date AND device_sn = :device_sn
+            """
+            params = {'date': date, 'device_sn': device_sn}
+        else:
+            query = """
+            SELECT * FROM calculated_sleep_data 
+            WHERE date = :date
+            """
+            params = {'date': date}
+        
+        result = self.execute_query(query, params)
+        
+        # 如果有结果，还需要获取对应的睡眠阶段细分数据
+        if not result.empty:
+            import pandas as pd
+                
+            # 为每一行添加睡眠阶段细分数据
+            records = result.to_dict('records')
+            for record in records:
+                record_device_sn = record.get('device_sn')
+                segments_df = self.get_sleep_stage_segments(date, record_device_sn)
+                    
+                if not segments_df.empty:
+                    segments_list = []
+                    for _, seg_row in segments_df.iterrows():
+                        segment = {
+                            'label': seg_row['label'],
+                            'value': str(seg_row['value'])
+                        }
+                        segments_list.append(segment)
+                    record['sleep_stage_segments'] = segments_list
+                else:
+                    record['sleep_stage_segments'] = []
+                
+            # 将处理后的数据转换回DataFrame
+            if records:
+                result = pd.DataFrame([records[0]]) if len(records) == 1 else pd.DataFrame(records)
+            
+        return result
         
 
 # 全局数据库管理器实例
