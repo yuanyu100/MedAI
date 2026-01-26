@@ -555,6 +555,207 @@ class DatabaseManager:
         return result
 
 
+    def store_sleep_analysis_data(self, sleep_data: dict):
+        """存储睡眠分析数据（仅更新睡眠相关字段，不影响生理指标字段）"""
+        # 首先创建表（如果不存在）
+        self.create_calculated_sleep_data_table()
+        
+        # 提取睡眠数据中的各个字段
+        date = sleep_data.get('date')
+        device_sn = sleep_data.get('device_sn', '')
+        bedtime = sleep_data.get('bedtime')
+        wakeup_time = sleep_data.get('wakeup_time')
+        time_in_bed_minutes = sleep_data.get('time_in_bed_minutes', 0)
+        sleep_duration_minutes = sleep_data.get('sleep_duration_minutes', 0)
+        sleep_score = sleep_data.get('sleep_score', 0)
+        bed_exit_count = sleep_data.get('bed_exit_count', 0)
+        sleep_prep_time_minutes = sleep_data.get('sleep_prep_time_minutes', 0)
+        
+        # 从 sleep_phases 中提取数据
+        sleep_phases = sleep_data.get('sleep_phases', {})
+        deep_sleep_minutes = sleep_phases.get('deep_sleep_minutes', 0)
+        light_sleep_minutes = sleep_phases.get('light_sleep_minutes', 0)
+        rem_sleep_minutes = sleep_phases.get('rem_sleep_minutes', 0)
+        awake_minutes = sleep_phases.get('awake_minutes', 0)
+        deep_sleep_percentage = sleep_phases.get('deep_sleep_percentage', 0)
+        light_sleep_percentage = sleep_phases.get('light_sleep_percentage', 0)
+        rem_sleep_percentage = sleep_phases.get('rem_sleep_percentage', 0)
+        awake_percentage = sleep_phases.get('awake_percentage', 0)
+        
+        # 从 average_metrics 中提取部分数据（睡眠分析也包含这些）
+        average_metrics = sleep_data.get('average_metrics', {})
+        avg_heart_rate = average_metrics.get('avg_heart_rate', 0)
+        avg_respiratory_rate = average_metrics.get('avg_respiratory_rate', 0)
+        
+        # 检查记录是否已存在
+        check_sql = """
+        SELECT id FROM calculated_sleep_data 
+        WHERE date = :date AND device_sn = :device_sn
+        """
+        check_params = {'date': date, 'device_sn': device_sn}
+        existing = self.execute_query(check_sql, check_params)
+        
+        if existing.empty:
+            # 插入新记录（仅睡眠相关字段）
+            insert_sql = """
+            INSERT INTO calculated_sleep_data (
+                date, device_sn, bedtime, wakeup_time, 
+                time_in_bed_minutes, sleep_duration_minutes, sleep_score, bed_exit_count, 
+                sleep_prep_time_minutes, deep_sleep_minutes, light_sleep_minutes, 
+                rem_sleep_minutes, awake_minutes, deep_sleep_percentage, 
+                light_sleep_percentage, rem_sleep_percentage, awake_percentage,
+                avg_heart_rate, avg_respiratory_rate
+            ) VALUES (
+                :date, :device_sn, :bedtime, :wakeup_time,
+                :time_in_bed_minutes, :sleep_duration_minutes, :sleep_score, :bed_exit_count,
+                :sleep_prep_time_minutes, :deep_sleep_minutes, :light_sleep_minutes,
+                :rem_sleep_minutes, :awake_minutes, :deep_sleep_percentage,
+                :light_sleep_percentage, :rem_sleep_percentage, :awake_percentage,
+                :avg_heart_rate, :avg_respiratory_rate
+            )
+            """
+        else:
+            # 更新现有记录（仅睡眠相关字段）
+            insert_sql = """
+            UPDATE calculated_sleep_data SET
+                bedtime = :bedtime,
+                wakeup_time = :wakeup_time,
+                time_in_bed_minutes = :time_in_bed_minutes,
+                sleep_duration_minutes = :sleep_duration_minutes,
+                sleep_score = :sleep_score,
+                bed_exit_count = :bed_exit_count,
+                sleep_prep_time_minutes = :sleep_prep_time_minutes,
+                deep_sleep_minutes = :deep_sleep_minutes,
+                light_sleep_minutes = :light_sleep_minutes,
+                rem_sleep_minutes = :rem_sleep_minutes,
+                awake_minutes = :awake_minutes,
+                deep_sleep_percentage = :deep_sleep_percentage,
+                light_sleep_percentage = :light_sleep_percentage,
+                rem_sleep_percentage = :rem_sleep_percentage,
+                awake_percentage = :awake_percentage,
+                avg_heart_rate = :avg_heart_rate,
+                avg_respiratory_rate = :avg_respiratory_rate,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE date = :date AND device_sn = :device_sn
+            """
+        
+        params = {
+            'date': date,
+            'device_sn': device_sn,
+            'bedtime': bedtime,
+            'wakeup_time': wakeup_time,
+            'time_in_bed_minutes': time_in_bed_minutes,
+            'sleep_duration_minutes': sleep_duration_minutes,
+            'sleep_score': sleep_score,
+            'bed_exit_count': bed_exit_count,
+            'sleep_prep_time_minutes': sleep_prep_time_minutes,
+            'deep_sleep_minutes': deep_sleep_minutes,
+            'light_sleep_minutes': light_sleep_minutes,
+            'rem_sleep_minutes': rem_sleep_minutes,
+            'awake_minutes': awake_minutes,
+            'deep_sleep_percentage': deep_sleep_percentage,
+            'light_sleep_percentage': light_sleep_percentage,
+            'rem_sleep_percentage': rem_sleep_percentage,
+            'awake_percentage': awake_percentage,
+            'avg_heart_rate': avg_heart_rate,
+            'avg_respiratory_rate': avg_respiratory_rate
+        }
+        
+        self.execute_command(insert_sql, params)
+
+
+    def store_physiological_analysis_data(self, physio_data: dict):
+        """存储生理指标分析数据（仅更新生理指标相关字段，不影响睡眠字段）"""
+        # 首先创建表（如果不存在）
+        self.create_calculated_sleep_data_table()
+        
+        # 提取基本信息
+        date = physio_data.get('date')
+        device_sn = physio_data.get('device_sn', '')
+        
+        # 从 heart_rate_metrics 中提取数据
+        heart_rate_metrics = physio_data.get('heart_rate_metrics', {})
+        avg_heart_rate = heart_rate_metrics.get('avg_heart_rate', 0)
+        min_heart_rate = heart_rate_metrics.get('min_heart_rate', 0)
+        max_heart_rate = heart_rate_metrics.get('max_heart_rate', 0)
+        hrv_score = heart_rate_metrics.get('hrv_score', 0)
+        
+        # 从 respiratory_metrics 中提取数据
+        respiratory_metrics = physio_data.get('respiratory_metrics', {})
+        avg_respiratory_rate = respiratory_metrics.get('avg_respiratory_rate', 0)
+        min_respiratory_rate = respiratory_metrics.get('min_respiratory_rate', 0)
+        max_respiratory_rate = respiratory_metrics.get('max_respiratory_rate', 0)
+        apnea_count = respiratory_metrics.get('apnea_count', 0)
+        max_apnea_duration_seconds = respiratory_metrics.get('max_apnea_duration', 0)
+        avg_apnea_duration_seconds = respiratory_metrics.get('avg_apnea_duration', 0)
+        apnea_events_per_hour = respiratory_metrics.get('apnea_events_per_hour', 0)
+        respiratory_health_score = respiratory_metrics.get('respiratory_health_score', 0)
+        
+        # 检查记录是否已存在
+        check_sql = """
+        SELECT id FROM calculated_sleep_data 
+        WHERE date = :date AND device_sn = :device_sn
+        """
+        check_params = {'date': date, 'device_sn': device_sn}
+        existing = self.execute_query(check_sql, check_params)
+        
+        if existing.empty:
+            # 插入新记录（仅生理指标相关字段）
+            insert_sql = """
+            INSERT INTO calculated_sleep_data (
+                date, device_sn, 
+                avg_heart_rate, min_heart_rate, max_heart_rate, hrv_score,
+                avg_respiratory_rate, min_respiratory_rate, max_respiratory_rate,
+                apnea_count, max_apnea_duration_seconds, avg_apnea_duration_seconds,
+                apnea_events_per_hour, respiratory_health_score
+            ) VALUES (
+                :date, :device_sn,
+                :avg_heart_rate, :min_heart_rate, :max_heart_rate, :hrv_score,
+                :avg_respiratory_rate, :min_respiratory_rate, :max_respiratory_rate,
+                :apnea_count, :max_apnea_duration_seconds, :avg_apnea_duration_seconds,
+                :apnea_events_per_hour, :respiratory_health_score
+            )
+            """
+        else:
+            # 更新现有记录（仅生理指标相关字段）
+            insert_sql = """
+            UPDATE calculated_sleep_data SET
+                avg_heart_rate = :avg_heart_rate,
+                min_heart_rate = :min_heart_rate,
+                max_heart_rate = :max_heart_rate,
+                hrv_score = :hrv_score,
+                avg_respiratory_rate = :avg_respiratory_rate,
+                min_respiratory_rate = :min_respiratory_rate,
+                max_respiratory_rate = :max_respiratory_rate,
+                apnea_count = :apnea_count,
+                max_apnea_duration_seconds = :max_apnea_duration_seconds,
+                avg_apnea_duration_seconds = :avg_apnea_duration_seconds,
+                apnea_events_per_hour = :apnea_events_per_hour,
+                respiratory_health_score = :respiratory_health_score,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE date = :date AND device_sn = :device_sn
+            """
+        
+        params = {
+            'date': date,
+            'device_sn': device_sn,
+            'avg_heart_rate': avg_heart_rate,
+            'min_heart_rate': min_heart_rate,
+            'max_heart_rate': max_heart_rate,
+            'hrv_score': hrv_score,
+            'avg_respiratory_rate': avg_respiratory_rate,
+            'min_respiratory_rate': min_respiratory_rate,
+            'max_respiratory_rate': max_respiratory_rate,
+            'apnea_count': apnea_count,
+            'max_apnea_duration_seconds': max_apnea_duration_seconds,
+            'avg_apnea_duration_seconds': avg_apnea_duration_seconds,
+            'apnea_events_per_hour': apnea_events_per_hour,
+            'respiratory_health_score': respiratory_health_score
+        }
+        
+        self.execute_command(insert_sql, params)
+
+
     def get_sleep_stage_segments(self, date: str, device_sn: str = None):
         """获取睡眠阶段细分数据"""
         # 这个方法用于获取睡眠阶段的细分数据

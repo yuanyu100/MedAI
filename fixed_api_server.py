@@ -960,7 +960,7 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
     try:
         print(f"🤖 运行AI分析: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
 
-        request.force_refresh = False
+        # request.force_refresh = False
         
         # 默认 force_refresh=False，从数据库读取缓存结果
         if not request.force_refresh:
@@ -1056,12 +1056,10 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
         # 将结果转换为HTML格式
         html_result = convert_to_html(result)
         
-        # 限制报告长度到500词以内
-        limited_html_result = limit_report_length(html_result, max_words=500)
         
         return {
             "success": True,
-            "data": limited_html_result,
+            "data": html_result,
             "has_data": True
         }
 
@@ -1254,7 +1252,7 @@ async def analyze_sleep(request: SleepAnalysisRequest) -> SleepAnalysisResponseM
         
         # 如果工具成功，存储结果到数据库
         if result_dict.get("success") and result_dict.get("data"):
-            db_manager.store_calculated_sleep_data(result_dict.get("data", {}))
+            db_manager.store_sleep_analysis_data(result_dict.get("data", {}))
         
         # 返回结果（工具函数已经返回正确的嵌套结构）
         if result_dict.get("success") is False:
@@ -1318,8 +1316,8 @@ async def analyze_physiological(request: PhysiologicalAnalysisRequest) -> Physio
         
         # 如果工具成功，存储结果到数据库
         if result_dict.get("success") and result_dict.get("data"):
-            logger.info(f"存储生理指标数据到数据库，{result_dict.get("data", {})}, {request.device_sn}")
-            db_manager.store_calculated_sleep_data(result_dict.get("data", {}))
+            print(f"存储生理指标数据到数据库: {request.date}, {request.device_sn}")
+            db_manager.store_physiological_analysis_data(result_dict.get("data", {}))
         
         # 返回结果（工具函数已经返回正确的嵌套结构）
         if result_dict.get("success") is False:
