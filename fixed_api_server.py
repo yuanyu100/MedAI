@@ -28,6 +28,10 @@ from typing import List
 import uvicorn
 from langchain_core.messages import HumanMessage
 import pandas as pd
+import logging
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # 使用改进的智能体
 from improved_agent import run_improved_agent
@@ -956,7 +960,7 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
     try:
         print(f"🤖 运行AI分析: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
 
-        # request.force_refresh = false
+        request.force_refresh = False
         
         # 默认 force_refresh=False，从数据库读取缓存结果
         if not request.force_refresh:
@@ -1044,7 +1048,7 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
         result = run_improved_agent(
             request.date, 
             thread_id=f"ai_analysis_{request.date}", 
-            force_refresh=False,  # 硬编码为False强制不重新计算
+            force_refresh=request.force_refresh,  # 硬编码为False强制不重新计算
             include_formatted_time=True,
             device_sn=request.device_sn
         )
@@ -1293,6 +1297,7 @@ async def analyze_physiological(request: PhysiologicalAnalysisRequest) -> Physio
             
             # 检查heart_rate_variability是否不为0（哨兵字段，表示生理分析已执行）
             if stored_record.get('heart_rate_variability', 0) != 0:
+                logger.info("从数据库获取的生理指标数据已存在，不再重新计算")
                 # 使用转换函数将平铺DB记录转换为嵌套Pydantic模型
                 data_model = transform_db_record_to_physiological_analysis(stored_record)
                 
@@ -1313,6 +1318,7 @@ async def analyze_physiological(request: PhysiologicalAnalysisRequest) -> Physio
         
         # 如果工具成功，存储结果到数据库
         if result_dict.get("success") and result_dict.get("data"):
+            logger.info(f"存储生理指标数据到数据库，{result_dict.get("data", {})}, {request.device_sn}")
             db_manager.store_calculated_sleep_data(result_dict.get("data", {}))
         
         # 返回结果（工具函数已经返回正确的嵌套结构）

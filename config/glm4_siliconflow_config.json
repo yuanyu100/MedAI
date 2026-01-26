@@ -1,7 +1,7 @@
 {
     "config": {
         "llm_type": "openai",
-        "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "model": "Qwen/Qwen2.5-72B-Instruct",
         "temperature": 0.3,
         "top_p": 0.9,
         "max_completion_tokens": 8000,

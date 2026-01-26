@@ -6,6 +6,11 @@ from datetime import datetime, timedelta
 import os
 from sqlalchemy import create_engine, text
 from langchain.tools import tool
+import logging
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 
 class BedMonitoringDBAnalyzer:

@@ -1,13 +1,14 @@
 {
     "config": {
         "llm_type": "openai",
-        "model": "Qwen/Qwen3-30B-A3B-Instruct-2507",
+        "model": "deepseek-ai/DeepSeek-V3", 
         "temperature": 0.3,
         "top_p": 0.7,
         "max_completion_tokens": 10000,
-        "timeout": 6000,
+        "timeout": 600,
         "thinking": "disabled",
         "base_url": "https://api.siliconflow.cn/v1",
         "api_key": "sk-rejkwjvqwerqgfmolygzjxqqoaejovbkeieyuwxtogokvgqp"
     }
 }
+
