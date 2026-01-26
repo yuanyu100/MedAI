@@ -70,7 +70,7 @@ class AgentState(MessagesState):
 
 
 import logging
-logging.basicConfig(level=logging.INFO)
+# logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
 
@@ -434,10 +434,10 @@ def get_cached_analysis(query: str, date: str):
         LIMIT 1
         """
         params = {'query': query, 'date': standardized_date}
-        logger.debug(f"SQL: {sql}, Params: {params}")
+        logger.info(f"SQL: {sql}, Params: {params}")
         
         result_df = db_manager.execute_query(sql, params)
-        logger.debug(f"Result DataFrame: {result_df}")
+        logger.info(f"Result DataFrame: {result_df}")
         
         if result_df is not None and not result_df.empty:
             cached_result = result_df.iloc[0]['result']

@@ -69,7 +69,10 @@ def convert_to_html(text):
             continue
         
         # 处理标题（以###开头的行）
-        if line.startswith('### '):
+        if line.startswith('#### '):
+            title = line[5:].strip()
+            html_lines.append(f'<h4>{title}</h4>')
+        elif line.startswith('### '):
             title = line[4:].strip()
             html_lines.append(f'<h3>{title}</h3>')
         # 处理二级标题（以##开头的行）
@@ -949,14 +952,64 @@ async def run_agent_markdown(request: AgentRequest):
 
 @app.post("/ai-analysis")
 async def ai_analysis(request: SleepAnalysisWithTimeRequest):
-    """AI分析 - 使用格式化的时间信息作为用户提示"""
+    """AI分析 - 默认从数据库读取预计算结果，force_refresh=True时才重新计算"""
     try:
-        print(f"🤖 运行AI分析: {request.date}, 强制刷新: {request.force_refresh}")
+        print(f"🤖 运行AI分析: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
+
+        # request.force_refresh = false
+        
+        # 默认 force_refresh=False，从数据库读取缓存结果
+        if not request.force_refresh:
+            # 从 analysis_results 表读取已存储的分析结果
+            from improved_agent import get_cached_analysis
+            
+            # 构建查询字符串
+            query = f"请分析 {request.date} 的睡眠数据"
+            if request.device_sn:
+                query = f"[设备序列号: {request.device_sn}] {query}"
+            
+            # 从数据库获取缓存的分析结果
+            cached_result = get_cached_analysis(query, request.date)
+            
+            if cached_result:
+                print(f"✅ 从数据库获取已存储的AI分析结果: {request.date}")
+                
+                # 检查是否为无数据信息
+                if "暂无数据分析" in cached_result:
+                    return {
+                        "success": True,
+                        "data": "<p>当前日期没有可用的睡眠数据。请确保设备已收集相应数据后再进行分析。</p>",
+                        "warning": "无可用数据",
+                        "has_data": False
+                    }
+                
+                # 将结果转换为HTML格式
+                html_result = convert_to_html(cached_result)
+                
+                # 限制报告长度到500词以内
+                limited_html_result = limit_report_length(html_result)
+                
+                return {
+                    "success": True,
+                    "data": limited_html_result,
+                    "has_data": True
+                }
+            else:
+                # 数据库中没有缓存结果，返回提示信息
+                print(f"⚠️ 数据库中没有 {request.date} 的分析结果")
+                return {
+                    "success": True,
+                    "data": "<p>当前日期的分析结果尚未生成。请等待定时任务执行后再查询。</p>",
+                    "warning": "分析结果尚未生成",
+                    "has_data": False
+                }
+        
+        # force_refresh=True 时，执行实时计算
+        print(f"🔄 强制刷新，执行实时AI分析...")
         
         # 首先检查数据可用性
         from src.tools.sleep_data_checker_tool import check_detailed_sleep_data_with_device
         
-        # 根据是否有设备序列号来决定使用哪个函数
         if request.device_sn:
             check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
         else:
@@ -968,10 +1021,8 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
         
         if not has_data:
             print(f"⚠️ 未找到 {request.date} 的睡眠数据，尝试补偿机制...")
-            # 实施补偿机制：尝试触发数据收集
             await trigger_data_collection(request.date, request.device_sn)
             
-            # 再次检查数据是否可用
             if request.device_sn:
                 check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
             else:
@@ -983,22 +1034,20 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
             if not has_data:
                 return {
                     "success": True,
-                    "data": "</strong>当前日期没有可用的睡眠数据。请确保设备已收集相应数据后再进行分析。</p>",
+                    "data": "<p>当前日期没有可用的睡眠数据。请确保设备已收集相应数据后再进行分析。</p>",
                     "warning": "无可用数据",
                     "has_data": False
                 }
         
-        # 使用改进的智能体运行分析，包含格式化的睡眠时间信息
+        # 使用改进的智能体运行分析
         from improved_agent import run_improved_agent
         result = run_improved_agent(
             request.date, 
             thread_id=f"ai_analysis_{request.date}", 
-            force_refresh=request.force_refresh,
+            force_refresh=False,  # 硬编码为False强制不重新计算
             include_formatted_time=True,
-            device_sn=request.device_sn  # 传递设备序列号
+            device_sn=request.device_sn
         )
-
-        # logger.debug(f"AI analysis result: {result}")
         
         # 将结果转换为HTML格式
         html_result = convert_to_html(result)
