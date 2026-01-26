@@ -431,11 +431,19 @@ def transform_db_record_to_sleep_analysis(db_record: dict, sleep_stage_segments:
             for seg in sleep_stage_segments
         ]
     
+    # 辅助函数：将 pandas.Timestamp 转换为字符串
+    def safe_str_convert(val):
+        if val is None:
+            return None
+        if hasattr(val, 'strftime'):  # pandas.Timestamp or datetime
+            return val.strftime('%Y-%m-%d %H:%M:%S')
+        return str(val)
+    
     # 构建主数据模型
     return SleepAnalysisDataModel(
         date=str(db_record.get('date', '')),
-        bedtime=db_record.get('bedtime'),
-        wakeup_time=db_record.get('wakeup_time'),
+        bedtime=safe_str_convert(db_record.get('bedtime')),
+        wakeup_time=safe_str_convert(db_record.get('wakeup_time')),
         time_in_bed_minutes=float(db_record.get('time_in_bed_minutes', 0) or 0),
         sleep_duration_minutes=float(db_record.get('sleep_duration_minutes', 0) or 0),
         sleep_score=int(db_record.get('sleep_score', 0) or 0),
