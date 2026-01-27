@@ -305,7 +305,7 @@ class DatabaseManager:
         }
         
         self.execute_command(insert_sql, params)
-    
+
     def _determine_data_type(self, data):
         """根据数据内容确定数据类型"""
         # 检查数据内容中是否包含 "呼吸暂停" 关键词
@@ -662,7 +662,11 @@ class DatabaseManager:
         }
         
         self.execute_command(insert_sql, params)
-
+        
+        # 存储睡眠阶段分段数据
+        sleep_stage_segments = sleep_data.get('sleep_stage_segments', [])
+        if sleep_stage_segments:
+            self.store_sleep_stage_segments(date, device_sn, sleep_stage_segments)
 
     def store_physiological_analysis_data(self, physio_data: dict):
         """存储生理指标分析数据（仅更新生理指标相关字段，不影响睡眠字段）"""

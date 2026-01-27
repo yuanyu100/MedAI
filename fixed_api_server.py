@@ -930,9 +930,7 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
         from improved_agent import get_cached_analysis, run_improved_agent
         
         # 构建查询字符串
-        query = f"请分析 {request.date} 的睡眠数据"
-        if request.device_sn:
-            query = f"[设备序列号: {request.device_sn}] {query}"
+        query = f"[设备序列号: {request.device_sn}] 请分析 {request.date} 的睡眠数据"
         
         # 非强制刷新时，优先检查数据库缓存
         if not request.force_refresh:
@@ -966,12 +964,7 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
         
         # 检查数据可用性
         from src.tools.sleep_data_checker_tool import check_detailed_sleep_data_with_device
-        
-        if request.device_sn:
-            check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
-        else:
-            from src.tools.sleep_data_checker_tool import check_detailed_sleep_data
-            check_result = check_detailed_sleep_data(request.date)
+        check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
         
         check_data = json.loads(check_result)
         has_data = check_data.get('data', {}).get('has_sleep_data', False)
@@ -980,10 +973,7 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
             print(f"⚠️ 未找到 {request.date} 的睡眠数据，尝试补偿机制...")
             await trigger_data_collection(request.date, request.device_sn)
             
-            if request.device_sn:
-                check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
-            else:
-                check_result = check_detailed_sleep_data(request.date)
+            check_result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
             
             check_data = json.loads(check_result)
             has_data = check_data.get('data', {}).get('has_sleep_data', False)
@@ -1195,10 +1185,7 @@ async def analyze_sleep(request: SleepAnalysisRequest) -> SleepAnalysisResponseM
                 )
         
         # 数据库中没有数据，调用分析工具生成新数据
-        if request.device_sn:
-            result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
-        else:
-            result = analyze_single_day_sleep_data(request.date, "vital_signs")
+        result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
         
         result_dict = json.loads(result)
         
@@ -1257,12 +1244,8 @@ async def analyze_physiological(request: PhysiologicalAnalysisRequest) -> Physio
                 )
         
         # 数据库中没有数据或生理指标未填充，调用分析工具生成新数据
-        if request.device_sn:
-            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
-            result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
-        else:
-            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data
-            result = analyze_single_day_physiological_data(request.date, "vital_signs")
+        from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
+        result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
         
         result_dict = json.loads(result)
         
@@ -1312,15 +1295,9 @@ async def physiological_trend_endpoint(request: PhysiologicalTrendRequest):
     try:
         print(f"📊 生理指标趋势分析请求: {request.date}, 设备: {request.device_sn}")
         
-        # 根据是否有设备序列号来决定使用哪个函数
-        if request.device_sn:
-            # 使用带设备过滤的函数
-            from src.tools.physiological_analyzer_tool import analyze_physiological_trend_with_device
-            result = analyze_physiological_trend_with_device(request.date, request.device_sn)
-        else:
-            # 使用原有函数
-            from src.tools.physiological_analyzer_tool import analyze_physiological_trend
-            result = analyze_physiological_trend(request.date)
+        # 使用带设备过滤的函数
+        from src.tools.physiological_analyzer_tool import analyze_physiological_trend_with_device
+        result = analyze_physiological_trend_with_device(request.date, request.device_sn)
         result_dict = json.loads(result)
         
         # 直接返回结果但移除timestamp字段
@@ -1363,14 +1340,9 @@ async def check_weekly_sleep_data_endpoint(request: WeeklySleepDataCheckRequest)
     try:
         print(f"🔍 检查周睡眠数据: {request.start_date}, 设备: {request.device_sn}")
         
-        # 根据是否有设备序列号来决定使用哪个函数
-        if request.device_sn:
-            # 使用带设备过滤的函数
-            from src.tools.sleep_data_checker_tool import check_weekly_sleep_data_with_device
-            result = check_weekly_sleep_data_with_device(request.start_date, request.device_sn, "vital_signs")
-        else:
-            # 使用原有函数
-            result = check_weekly_sleep_data(request.start_date, "vital_signs")
+        # 使用带设备过滤的函数
+        from src.tools.sleep_data_checker_tool import check_weekly_sleep_data_with_device
+        result = check_weekly_sleep_data_with_device(request.start_date, request.device_sn, "vital_signs")
         
         # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         result_dict = json.loads(result)
@@ -1427,14 +1399,9 @@ async def check_recent_weekly_sleep_data_endpoint(request: RecentWeeklySleepData
     try:
         print(f"🔍 检查近期{request.num_weeks}周睡眠数据, 设备: {request.device_sn}")
         
-        # 根据是否有设备序列号来决定使用哪个函数
-        if request.device_sn:
-            # 使用带设备过滤的函数
-            from src.tools.sleep_data_checker_tool import check_recent_week_sleep_data_with_device
-            result = check_recent_week_sleep_data_with_device(request.num_weeks, request.device_sn, "vital_signs")
-        else:
-            # 使用原有函数
-            result = check_recent_week_sleep_data(request.num_weeks, "vital_signs")
+        # 使用带设备过滤的函数
+        from src.tools.sleep_data_checker_tool import check_recent_week_sleep_data_with_device
+        result = check_recent_week_sleep_data_with_device(request.num_weeks, request.device_sn, "vital_signs")
         
         # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         result_dict = json.loads(result)
@@ -1500,15 +1467,9 @@ async def get_comprehensive_report(request: ComprehensiveReportRequest):
         import os
         sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
         
-        # 根据是否有设备序列号来决定使用哪个函数
-        if request.device_sn:
-            # 使用带设备过滤的函数
-            from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data_with_device
-            sleep_result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
-        else:
-            # 使用原有函数
-            from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data
-            sleep_result = analyze_single_day_sleep_data(request.date, "vital_signs")
+        # 使用带设备过滤的函数
+        from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data_with_device
+        sleep_result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
         
         # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         sleep_result_dict = json.loads(sleep_result)
@@ -1527,14 +1488,9 @@ async def get_comprehensive_report(request: ComprehensiveReportRequest):
             return {k: v for k, v in filtered_result.items() if v is not None}
         
         # 获取生理指标分析数据
-        if request.device_sn:
-            # 使用带设备过滤的函数
-            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
-            physio_result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
-        else:
-            # 使用原有函数
-            from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data
-            physio_result = analyze_single_day_physiological_data(request.date, "vital_signs")
+        # 使用带设备过滤的函数
+        from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
+        physio_result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
         
         # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
         physio_result_dict = json.loads(physio_result)

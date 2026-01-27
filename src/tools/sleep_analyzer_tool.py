@@ -1328,21 +1328,6 @@ class SleepMetricsCalculator:
             # 10. 添加总结
             sleep_data_dict['summary'] = cls._generate_summary(sleep_data_dict['sleep_score'])
             
-            # 11. 存储睡眠阶段分段数据到数据库
-            try:
-                from src.db.database import get_db_manager
-                db_manager = get_db_manager()
-                device_sn = sleep_data_dict.get('device_sn', '')
-                # 存储睡眠阶段分段数据
-                db_manager.store_sleep_stage_segments(
-                    date=date_str,
-                    device_sn=device_sn,
-                    segments=sleep_phases_data['sleep_stage_segments']
-                )
-                logger.info(f"成功存储睡眠阶段分段数据，日期: {date_str}, 设备: {device_sn}, 段数: {len(sleep_phases_data['sleep_stage_segments'])}")
-            except Exception as e:
-                logger.error(f"存储睡眠阶段分段数据时出错: {str(e)}")
-            
             return sleep_data_dict
             
         except Exception as e:
