@@ -199,10 +199,10 @@ class SleepStageAnalyzer:
         # 深睡判定
         overall_resp_mean = data['respiratory_rate'].mean()
         data['is_deep'] = (
-            (data['heart_rate'] <= baseline_heart_rate * 0.85) &
-            (data['respiratory_rate'] <= overall_resp_mean * 0.9) &
-            (data['respiratory_stability'] < 5) &
-            (data['body_moves_ratio'] <= 3) &
+            (data['heart_rate'] <= baseline_heart_rate * 0.90) &  # 从0.85调整到0.90，更宽松
+            (data['respiratory_rate'] <= overall_resp_mean * 0.95) &  # 从0.9调整到0.95，更宽松
+            (data['respiratory_stability'] < 8) &  # 从5调整到8，更宽松
+            (data['body_moves_ratio'] <= 5) &  # 从3调整到5，更宽松
             (data['freq_stability']) &
             (~data['is_awake'])
         )
@@ -1165,8 +1165,10 @@ class SleepMetricsCalculator:
                 light_sleep_duration *= adjustment_factor
                 rem_sleep_duration *= adjustment_factor
                 awake_duration *= adjustment_factor
-                sleep_duration_minutes = total_sleep_phases * adjustment_factor
+                # 睡眠时长应该是调整后的深睡+浅睡+REM时长
+                sleep_duration_minutes = deep_sleep_duration + light_sleep_duration + rem_sleep_duration
         else:
+            # 直接使用原始的睡眠时长
             sleep_duration_minutes = total_sleep_time
         
         # 计算各阶段占比
@@ -1174,13 +1176,20 @@ class SleepMetricsCalculator:
             deep_sleep_ratio = (deep_sleep_duration / sleep_duration_minutes) * 100
             light_sleep_ratio = (light_sleep_duration / sleep_duration_minutes) * 100
             rem_sleep_ratio = (rem_sleep_duration / sleep_duration_minutes) * 100
-            awake_ratio = (awake_duration / sleep_duration_minutes) * 100
+            # 清醒时长占比应该基于卧床时间，而不是睡眠时长
+            awake_ratio = (awake_duration / time_in_bed_minutes_total) * 100 if time_in_bed_minutes_total > 0 else 0
         else:
             if time_in_bed_minutes > 0:
                 awake_ratio = 100
                 deep_sleep_ratio = light_sleep_ratio = rem_sleep_ratio = 0
             else:
                 deep_sleep_ratio = light_sleep_ratio = rem_sleep_ratio = awake_ratio = 0
+        
+        # 确保各比例不超过100%
+        deep_sleep_ratio = min(deep_sleep_ratio, 100)
+        light_sleep_ratio = min(light_sleep_ratio, 100)
+        rem_sleep_ratio = min(rem_sleep_ratio, 100)
+        awake_ratio = min(awake_ratio, 100)
         
         return {
             'sleep_duration_minutes': sleep_duration_minutes,
@@ -1283,11 +1292,25 @@ class SleepMetricsCalculator:
             # 5. 计算基本睡眠指标
             basic_metrics = cls._calculate_basic_sleep_metrics(night_data, df, target_date, prev_date)
             
-            # 6. 计算睡眠阶段
+            # 计算入睡时间（就寝时间 + 睡眠准备时间）
+            sleep_prep_time = basic_metrics['sleep_prep_time_minutes']
+            sleep_start_time = basic_metrics['bedtime'] + timedelta(minutes=sleep_prep_time)
+            
+            # 6. 计算睡眠阶段（从入睡时间开始）
             sleep_phases_data = cls._calculate_sleep_stages(
-                df[(df['upload_time'] >= basic_metrics['bedtime']) & 
+                df[(df['upload_time'] >= sleep_start_time) & 
                    (df['upload_time'] <= basic_metrics['wakeup_time'])].copy()
             )
+            
+            # 添加从就寝时间到入睡时间的清醒阶段
+            if sleep_prep_time > 0:
+                # 在sleep_stage_segments开头添加清醒阶段
+                sleep_phases_data['sleep_stage_segments'].insert(0, {
+                    "label": "清醒",
+                    "value": str(int(sleep_prep_time))
+                })
+                # 同时更新清醒时长
+                sleep_phases_data['awake_duration'] += sleep_prep_time
             
             # 7. 计算睡眠阶段占比
             phase_ratios = cls._calculate_sleep_phase_ratios(

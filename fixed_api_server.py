@@ -1460,69 +1460,138 @@ async def check_recent_weekly_sleep_data_endpoint(request: RecentWeeklySleepData
 async def get_comprehensive_report(request: ComprehensiveReportRequest):
     """获取综合报告 - 包含睡眠和生理指标"""
     try:
-        print(f"📋 获取综合报告: {request.date}, 设备: {request.device_sn}")
+        print(f"📋 获取综合数据: {request.date}, 设备: {request.device_sn}")
+        logger.info(f"开始获取综合报告，日期: {request.date}, 设备: {request.device_sn}")
         
-        # 获取睡眠分析数据
-        import sys
-        import os
-        sys.path.append(os.path.join(os.path.dirname(__file__), 'src', 'tools'))
+        # 首先尝试从数据库获取已存储的分析结果
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        stored_data_raw = db_manager.get_calculated_sleep_data(request.date, request.device_sn)
         
-        # 使用带设备过滤的函数
-        from src.tools.sleep_analyzer_tool import analyze_single_day_sleep_data_with_device
-        sleep_result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
+        logger.info(f"从数据库获取到的原始数据行数: {len(stored_data_raw)}")
         
-        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
-        sleep_result_dict = json.loads(sleep_result)
-        
-        # 如果工具返回的是错误格式，需要正确处理
-        if sleep_result_dict.get("success") is False:
-            # 工具已经返回了完整的错误响应
-            # 但我们需要移除timestamp字段
-            filtered_result = {
-                "success": sleep_result_dict.get("success"),
-                "data": sleep_result_dict.get("data"),
-                "error": sleep_result_dict.get("error"),
-                "message": sleep_result_dict.get("message")
+        # 检查数据库是否有已存储的结果
+        if not stored_data_raw.empty:
+            logger.info("数据库中有数据，开始处理")
+            stored_record = stored_data_raw.to_dict('records')[0]
+            logger.info(f"存储的记录: {stored_record}")
+            
+            # 获取sleep_stage_segments
+            segments_raw = db_manager.get_sleep_stage_segments(request.date, request.device_sn)
+            logger.info(f"获取到的睡眠阶段分段数据行数: {len(segments_raw)}")
+            sleep_stage_segments = []
+            if not segments_raw.empty:
+                sleep_stage_segments = segments_raw.to_dict('records')
+                logger.info(f"睡眠阶段分段数据: {sleep_stage_segments}")
+            
+            # 构建睡眠数据结构
+            sleep_data = {
+                "date": request.date,
+                "device_sn": request.device_sn,
+                "bedtime": stored_record.get('bedtime'),
+                "wakeup_time": stored_record.get('wakeup_time'),
+                "time_in_bed_minutes": stored_record.get('time_in_bed_minutes', 0),
+                "sleep_duration_minutes": stored_record.get('sleep_duration_minutes', 0),
+                "sleep_score": stored_record.get('sleep_score', 0),
+                "bed_exit_count": stored_record.get('bed_exit_count', 0),
+                "sleep_prep_time_minutes": stored_record.get('sleep_prep_time_minutes', 0),
+                "sleep_phases": {
+                    "deep_sleep_minutes": stored_record.get('deep_sleep_minutes', 0),
+                    "light_sleep_minutes": stored_record.get('light_sleep_minutes', 0),
+                    "rem_sleep_minutes": stored_record.get('rem_sleep_minutes', 0),
+                    "awake_minutes": stored_record.get('awake_minutes', 0),
+                    "deep_sleep_percentage": stored_record.get('deep_sleep_percentage', 0),
+                    "light_sleep_percentage": stored_record.get('light_sleep_percentage', 0),
+                    "rem_sleep_percentage": stored_record.get('rem_sleep_percentage', 0),
+                    "awake_percentage": stored_record.get('awake_percentage', 0)
+                },
+                "average_metrics": {
+                    "avg_heart_rate": stored_record.get('avg_heart_rate', 0),
+                    "avg_respiratory_rate": stored_record.get('avg_respiratory_rate', 0)
+                },
+                "sleep_stage_segments": sleep_stage_segments
             }
-            # 只保留非None的字段
-            return {k: v for k, v in filtered_result.items() if v is not None}
-        
-        # 获取生理指标分析数据
-        # 使用带设备过滤的函数
-        from src.tools.physiological_analyzer_tool import analyze_single_day_physiological_data_with_device
-        physio_result = analyze_single_day_physiological_data_with_device(request.date, request.device_sn, "vital_signs")
-        
-        # 直接返回工具函数的结果，因为工具函数已经使用ApiResponse格式
-        physio_result_dict = json.loads(physio_result)
-        
-        # 如果工具返回的是错误格式，需要正确处理
-        if physio_result_dict.get("success") is False:
-            # 工具已经返回了完整的错误响应
-            # 但我们需要移除timestamp字段
-            filtered_result = {
-                "success": physio_result_dict.get("success"),
-                "data": physio_result_dict.get("data"),
-                "error": physio_result_dict.get("error"),
-                "message": physio_result_dict.get("message")
+            logger.info(f"构建的睡眠数据结构: {sleep_data}")
+            
+            # 构建生理数据结构
+            physio_data = {
+                "date": request.date,
+                "device_sn": request.device_sn,
+                "heart_rate_metrics": {
+                    "avg_heart_rate": stored_record.get('avg_heart_rate', 0),
+                    "min_heart_rate": stored_record.get('min_heart_rate', 0),
+                    "max_heart_rate": stored_record.get('max_heart_rate', 0),
+                    "hrv_score": stored_record.get('hrv_score', 0)
+                },
+                "respiratory_metrics": {
+                    "avg_respiratory_rate": stored_record.get('avg_respiratory_rate', 0),
+                    "min_respiratory_rate": stored_record.get('min_respiratory_rate', 0),
+                    "max_respiratory_rate": stored_record.get('max_respiratory_rate', 0),
+                    "apnea_count": stored_record.get('apnea_count', 0),
+                    "max_apnea_duration": stored_record.get('max_apnea_duration_seconds', 0),
+                    "avg_apnea_duration": stored_record.get('avg_apnea_duration_seconds', 0),
+                    "respiratory_health_score": stored_record.get('respiratory_health_score', 0)
+                }
             }
-            # 只保留非None的字段
-            return {k: v for k, v in filtered_result.items() if v is not None}
-        
-        # 从工具返回的数据中提取实际数据部分
-        sleep_data = sleep_result_dict.get("data", {})
-        physio_data = physio_result_dict.get("data", {})
-        
-        # 整合数据并生成报告
-        report_data = generate_comprehensive_report(sleep_data, physio_data, request.date)
-        
-        # 构建正确的响应格式，移除timestamp
-        filtered_result = {
-            "success": True,
-            "data": report_data
-        }
-        return filtered_result
+            logger.info(f"构建的生理数据结构: {physio_data}")
+            
+            # 识别哪些字段没有数据
+            missing_fields = []
+            
+            # 检查睡眠数据
+            if not stored_record.get('bedtime'):
+                missing_fields.append("睡眠数据: 就寝时间")
+            if not stored_record.get('wakeup_time'):
+                missing_fields.append("睡眠数据: 起床时间")
+            if stored_record.get('time_in_bed_minutes', 0) == 0:
+                missing_fields.append("睡眠数据: 卧床时间")
+            if stored_record.get('sleep_duration_minutes', 0) == 0:
+                missing_fields.append("睡眠数据: 睡眠时长")
+            if stored_record.get('sleep_score', 0) == 0:
+                missing_fields.append("睡眠数据: 睡眠评分")
+            if stored_record.get('deep_sleep_minutes', 0) == 0:
+                missing_fields.append("睡眠数据: 深睡时长")
+            if stored_record.get('light_sleep_minutes', 0) == 0:
+                missing_fields.append("睡眠数据: 浅睡时长")
+            
+            # 检查生理数据
+            if stored_record.get('avg_heart_rate', 0) == 0:
+                missing_fields.append("生理数据: 平均心率")
+            if stored_record.get('avg_respiratory_rate', 0) == 0:
+                missing_fields.append("生理数据: 平均呼吸率")
+            if stored_record.get('hrv_score', 0) == 0:
+                missing_fields.append("生理数据: HRV分数")
+            if stored_record.get('apnea_count', 0) == 0:
+                missing_fields.append("生理数据: 呼吸暂停次数")
+            
+            logger.info(f"识别出的缺失字段: {missing_fields}")
+            
+            # 整合数据并生成报告
+            report_data = generate_comprehensive_report(sleep_data, physio_data, request.date)
+            logger.info(f"生成的综合报告数据: {report_data}")
+            
+            # 添加缺失字段信息
+            if missing_fields:
+                report_data["missing_fields"] = missing_fields
+            
+            # 构建正确的响应格式
+            filtered_result = {
+                "success": True,
+                "data": report_data
+            }
+            logger.info(f"综合报告生成成功，准备返回")
+            return filtered_result
+        else:
+            # 数据库中没有数据，返回错误
+            logger.warning(f"数据库中没有找到 {request.date} 的分析数据，设备: {request.device_sn}")
+            return {
+                "success": False,
+                "error": "数据库中没有找到该日期的分析数据",
+                "message": "请先执行睡眠分析和生理指标分析，然后再获取综合报告"
+            }
 
     except Exception as e:
+        logger.error(f"综合报告获取失败: {str(e)}")
         print(f"❌ 综合报告获取失败: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail={

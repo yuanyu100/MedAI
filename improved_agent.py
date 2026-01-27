@@ -530,6 +530,19 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
                 
                 print(f"提取的时间信息 - bedtime: {bedtime_str}, wakeup_time: {wakeup_time_str}, time_in_bed: {time_in_bed_minutes}, sleep_duration: {sleep_duration_minutes}")
                 
+                # 计算入睡时间
+                sleep_start_time_str = ""
+                if bedtime_str:
+                    try:
+                        # 解析就寝时间
+                        bedtime = datetime.fromisoformat(bedtime_str.replace('Z', '+00:00'))
+                        # 计算入睡时间（就寝时间 + 睡眠准备时间）
+                        sleep_start_time = bedtime + timedelta(minutes=sleep_prep_time)
+                        sleep_start_time_str = sleep_start_time.strftime('%H:%M')
+                    except:
+                        # 如果解析失败，使用默认值
+                        sleep_start_time_str = bedtime_str[11:16] if len(bedtime_str) >= 16 else ""
+                
                 # 获取生理指标数据
                 if device_sn:
                     # 如果提供了设备序列号，使用带设备的函数
@@ -569,17 +582,18 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
                 
                 print(f"生理指标数据 - avg_respiratory_rate: {avg_respiratory_rate}, avg_heart_rate: {avg_heart_rate}")
                 
-                # 格式化为自然语言描述
-                formatted_time_str = f"昨晚我{bedtime_str[11:16]}上床，{bedtime_str[11:16]}入睡，{wakeup_time_str[11:16]}醒来，总卧床时长为{time_in_bed_minutes//60}小时{time_in_bed_minutes%60}分，睡眠时长为{sleep_duration_minutes//60}小时{sleep_duration_minutes%60}分。\n"
-                formatted_time_str += f"其中，睡眠准备期为{sleep_prep_time//60}小时{sleep_prep_time%60}分，深睡时长为{deep_sleep_minutes//60}小时{deep_sleep_minutes%60}分，深睡占比为{deep_sleep_ratio:.2f}%，中间有{bed_exit_count}次离床。\n"
-                formatted_time_str += f"昨晚的睡眠中，我的平均呼吸率为{avg_respiratory_rate:.1f}次/分钟，最低呼吸率为{min_respiratory_rate:.1f}次/分钟，最高呼吸率为{max_respiratory_rate:.1f}次/分钟，呼吸暂停为{apnea_events_per_hour:.1f}次/小时，最长呼吸暂停时长为{max_apnea_duration:.1f}秒。昨晚的睡眠中，我的平均心率为{avg_heart_rate:.1f}次/分钟，最低心率为{min_heart_rate:.1f}次/分钟，最高心率为{max_heart_rate:.1f}次/分钟。请对我昨晚的睡眠情况进行分析，并给出相关建议。请尽量精简直接的建议，400字左右。不要客套话,不需要重复输出我的数据！！！"
+                # 格式化为自然语言描述，确保数字格式正确
+                formatted_time_str = f"昨晚我{bedtime_str[11:16]}上床，{sleep_start_time_str}入睡，{wakeup_time_str[11:16]}醒来，总卧床时长为{time_in_bed_minutes//60}小时{time_in_bed_minutes%60}分，睡眠时长为{sleep_duration_minutes//60}小时{sleep_duration_minutes%60}分。其中，深睡时长为{deep_sleep_minutes//60}小时{deep_sleep_minutes%60}分。\n"
+                formatted_time_str += f"昨晚的睡眠中，我的平均呼吸率为{avg_respiratory_rate:.1f}次/分钟，最低呼吸率为{min_respiratory_rate:.1f}次/分钟，最高呼吸率为{max_respiratory_rate:.1f}次/分钟，呼吸暂停为{apnea_events_per_hour:.1f}次/小时，最长呼吸暂停时长为{max_apnea_duration:.1f}秒。我的平均心率为{avg_heart_rate:.1f}次/分钟，最低心率为{min_heart_rate:.1f}次/分钟，最高心率为{max_heart_rate:.1f}次/分钟。"
+                formatted_time_str += f" 请对我昨晚的睡眠情况进行分析，并给出相关建议，不要把这些数据重复！！就是进行分析就好！不要输出这些数据！按照老年人可读性好的方式输出！几段话，挑重点觉得有必要说明的就说明，没必要说明的就不要输出！！！请尽量精简直接的建议，400字左右。不要客套话,不需要重复输出我的数据！！！"
                 
                 formatted_time_input = formatted_time_str
 
                 print(formatted_time_input+"注意！！improved_agent533")
                 
                 # 更新查询以使用格式化的数据
-                query = f"请分析以下睡眠数据:\n\n{formatted_time_input}\n\n请根据以上数据，提供专业的睡眠分析和建议。"
+                # 确保约束被正确传递给AI
+                query = formatted_time_str
             else:
                 # 如果睡眠数据中有错误，检查是否是无数据的情况
                 print(f"睡眠数据包含错误: {sleep_data}")
@@ -588,11 +602,12 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
                     return "暂无数据分析"
                 else:
                     # 如果是其他错误，继续处理
-                    formatted_time_str = f"请根据睡眠数据，提供专业的睡眠分析和建议。"
+                    formatted_time_str = f"请根据睡眠数据，提供专业的睡眠分析和建议。请尽量精简直接的建议，400字以内。不要客套话,不需要重复输出我的数据！！！"
                     formatted_time_input = formatted_time_str
                     
                     # 更新查询以使用格式化的数据
-                    query = f"请分析以下睡眠数据:\n\n{formatted_time_input}\n\n请根据以上数据，提供专业的睡眠分析和建议。"
+                    # 确保约束被正确传递给AI
+                    query = formatted_time_str
         except Exception as e:
             logger.warning(f"获取格式化睡眠时间信息失败: {e}")
             print(f"获取格式化睡眠时间信息失败: {e}")
@@ -662,6 +677,22 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
 
     # 构建最终结果，将原始数据信息放在结果前面
     analysis_result = "\n".join(result) if result else "暂无数据分析"
+    
+    # 限制结果长度不超过400字
+    MAX_LENGTH = 400
+    if len(analysis_result) > MAX_LENGTH:
+        # 找到合适的截断点，避免截断到中间
+        truncated_result = analysis_result[:MAX_LENGTH]
+        # 尝试在最后一个句号或逗号处截断
+        last_period = truncated_result.rfind('。')
+        last_comma = truncated_result.rfind('，')
+        
+        if last_period > MAX_LENGTH * 0.8:
+            truncated_result = truncated_result[:last_period + 1]
+        elif last_comma > MAX_LENGTH * 0.8:
+            truncated_result = truncated_result[:last_comma + 1]
+        
+        analysis_result = truncated_result + "..."
     
     # 如果存在formatted_time_input_local，则将其放在分析结果前面
     # if formatted_time_input_local:
