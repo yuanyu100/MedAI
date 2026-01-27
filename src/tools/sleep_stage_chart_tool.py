@@ -141,7 +141,7 @@ def calculate_stage_summary(stages: List[Dict[str, Any]]) -> Dict[str, Any]:
     Returns:
         摘要信息
     """
-    stage_names = {1: "深睡", 2: "浅睡", 3: "快速眼动", 4: "清醒"}
+    stage_names = {1: "深睡", 2: "浅睡", 3: "眼动", 4: "清醒"}
     stage_durations = {1: 0, 2: 0, 3: 0, 4: 0}
     
     for stage in stages:

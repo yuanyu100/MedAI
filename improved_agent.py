@@ -572,7 +572,7 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
                 # 格式化为自然语言描述
                 formatted_time_str = f"昨晚我{bedtime_str[11:16]}上床，{bedtime_str[11:16]}入睡，{wakeup_time_str[11:16]}醒来，总卧床时长为{time_in_bed_minutes//60}小时{time_in_bed_minutes%60}分，睡眠时长为{sleep_duration_minutes//60}小时{sleep_duration_minutes%60}分。\n"
                 formatted_time_str += f"其中，睡眠准备期为{sleep_prep_time//60}小时{sleep_prep_time%60}分，深睡时长为{deep_sleep_minutes//60}小时{deep_sleep_minutes%60}分，深睡占比为{deep_sleep_ratio:.2f}%，中间有{bed_exit_count}次离床。\n"
-                formatted_time_str += f"昨晚的睡眠中，我的平均呼吸率为{avg_respiratory_rate:.1f}次/分钟，最低呼吸率为{min_respiratory_rate:.1f}次/分钟，最高呼吸率为{max_respiratory_rate:.1f}次/分钟，呼吸暂停为{apnea_events_per_hour:.1f}次/小时，平均呼吸暂停时长为0.0秒，最长呼吸暂停时长为{max_apnea_duration:.1f}秒。昨晚的睡眠中，我的平均心率为{avg_heart_rate:.1f}次/分钟，最低心率为{min_heart_rate:.1f}次/分钟，最高心率为{max_heart_rate:.1f}次/分钟。请对我昨晚的睡眠情况进行分析，并给出相关建议。请尽量精简直接的建议，500字左右。不要客套话"
+                formatted_time_str += f"昨晚的睡眠中，我的平均呼吸率为{avg_respiratory_rate:.1f}次/分钟，最低呼吸率为{min_respiratory_rate:.1f}次/分钟，最高呼吸率为{max_respiratory_rate:.1f}次/分钟，呼吸暂停为{apnea_events_per_hour:.1f}次/小时，最长呼吸暂停时长为{max_apnea_duration:.1f}秒。昨晚的睡眠中，我的平均心率为{avg_heart_rate:.1f}次/分钟，最低心率为{min_heart_rate:.1f}次/分钟，最高心率为{max_heart_rate:.1f}次/分钟。请对我昨晚的睡眠情况进行分析，并给出相关建议。请尽量精简直接的建议，400字左右。不要客套话,不需要重复输出我的数据！！！"
                 
                 formatted_time_input = formatted_time_str
 

@@ -20,7 +20,7 @@ def get_stage_label(stage_value):
     stage_labels = {
         1: "深睡",
         2: "浅睡", 
-        3: "快速眼动",
+        3: "眼动",
         4: "清醒"
     }
     return stage_labels.get(stage_value, "未知")
@@ -74,7 +74,7 @@ def calculate_bedtime_wakeup_times(night_data, target_date, prev_date):
                 current_segment_start = row['upload_time']
             valid_count += 1
         else:  # 离床，结束当前段
-            if current_segment_start is not None and valid_count >= 3:
+            if current_segment_start is not None and valid_count >= 5:
                 # 结束当前有效数据段
                 valid_segments.append({
                     'start_time': current_segment_start,
@@ -86,7 +86,7 @@ def calculate_bedtime_wakeup_times(night_data, target_date, prev_date):
             valid_count = 0
     
     # 处理最后一个可能的有效段
-    if current_segment_start is not None and valid_count >= 3:
+    if current_segment_start is not None and valid_count >= 5:
         valid_segments.append({
             'start_time': current_segment_start,
             'end_time': sorted_data.iloc[-1]['upload_time'],
@@ -674,7 +674,7 @@ def analyze_sleep_metrics(df, date_str):
             
             # 3. REM（第三优先级）
             rem_mask = (~awake_mask) & (~deep_mask) & sleep_data['is_rem_continuous']
-            sleep_data.loc[rem_mask, ['stage_value', 'stage_label']] = [3, "快速眼动"]
+            sleep_data.loc[rem_mask, ['stage_value', 'stage_label']] = [3, "眼动"]
             
             # 4. 浅睡（默认，其余情况）
             light_mask = (~awake_mask) & (~deep_mask) & (~rem_mask)

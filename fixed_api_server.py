@@ -58,48 +58,88 @@ def convert_to_html(text):
     if not text:
         return ""
     
+    def convert_bold(s):
+        """将**text**转换为<strong>text</strong>"""
+        return re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', s)
+    
+    def is_section_header(line):
+        """检测是否为章节标题（如"睡眠数据分析："）"""
+        # 以冒号结尾的短行，且不是数字开头
+        if (line.endswith(':') or line.endswith('：')) and len(line) < 30:
+            if not re.match(r'^\d+\.', line):
+                return True
+        return False
+    
+    def is_numbered_header(line):
+        """检测是否为编号标题（如"1. 时间异常"）"""
+        # 数字+点+空格开头，且内容较短（标题而非正文）
+        if re.match(r'^\d+\.\s+', line):
+            # 去掉数字后的内容
+            content = re.sub(r'^\d+\.\s+', '', line)
+            # 如果内容较短（<20字）且不包含句号，认为是标题
+            if len(content) < 20 and '。' not in content and ',' not in content:
+                return True
+        return False
+    
     # 将文本按行分割
     lines = text.split('\n')
     html_lines = []
+    prev_was_empty = False  # 跟踪上一行是否为空
     
     for line in lines:
         line = line.strip()
         if not line:
-            html_lines.append('<br>')
+            # 跳过连续的空行，不添加<br>
+            prev_was_empty = True
             continue
         
         # 跳过分隔符行（如 ---）
         if line.strip() == '---':
             continue
         
-        # 处理标题（以###开头的行）
+        prev_was_empty = False  # 重置空行标记
+        
+        # 处理Markdown标题（以###开头的行）
         if line.startswith('#### '):
-            title = line[5:].strip()
+            title = convert_bold(line[5:].strip())
             html_lines.append(f'<h4>{title}</h4>')
         elif line.startswith('### '):
-            title = line[4:].strip()
+            title = convert_bold(line[4:].strip())
             html_lines.append(f'<h3>{title}</h3>')
-        # 处理二级标题（以##开头的行）
         elif line.startswith('## '):
-            title = line[3:].strip()
+            title = convert_bold(line[3:].strip())
             html_lines.append(f'<h2>{title}</h2>')
-        # 处理一级标题（以#开头的行）
         elif line.startswith('# '):
-            title = line[2:].strip()
+            title = convert_bold(line[2:].strip())
             html_lines.append(f'<h1>{title}</h1>')
-        # 处理列表项（以数字.开头的行）
-        elif re.match(r'^\d+\. ', line):
-            # 替换所有**为<strong>，但要处理嵌套情况
-            formatted_line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
-            html_lines.append(f'<p>{formatted_line}</p>')
-        # 处理粗体文本（**text**）
-        elif '**' in line:
-            formatted_line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
+        # 匄配章节标题（如"睡眠数据分析："）使用h3
+        elif is_section_header(line):
+            title = convert_bold(line)
+            html_lines.append(f'<h3>{title}</h3>')
+        # 匄配编号标题（如"1. 时间异常"）使用h4
+        elif is_numbered_header(line):
+            # 提取数字和标题内容
+            match = re.match(r'^(\d+)\.\s+(.+)$', line)
+            if match:
+                num = match.group(1)
+                title = convert_bold(match.group(2))
+                html_lines.append(f'<h4>{num}. {title}</h4>')
+            else:
+                formatted_line = convert_bold(line)
+                html_lines.append(f'<h4>{formatted_line}</h4>')
+        # 处理无序列表项（以- 开头的行）
+        elif line.startswith('- '):
+            content = convert_bold(line[2:].strip())
+            html_lines.append(f'<p>{content}</p>')
+        # 处理其他有序列表项（以数字.开头的较长正文）
+        elif re.match(r'^\d+\.\s+', line):
+            # 去掉数字编号，作为正文
+            content = re.sub(r'^\d+\.\s+', '', line)
+            formatted_line = convert_bold(content)
             html_lines.append(f'<p>{formatted_line}</p>')
         # 处理其他普通文本
         else:
-            # 替换任何剩余的**标记
-            formatted_line = re.sub(r'\*\*(.*?)\*\*', r'<strong>\1</strong>', line)
+            formatted_line = convert_bold(line)
             html_lines.append(f'<p>{formatted_line}</p>')
     
     return ''.join(html_lines)
@@ -120,8 +160,8 @@ def count_words(text):
     return chinese_chars + english_words
 
 
-def limit_report_length(text, max_words=500):
-    """限制报告长度到指定单词数以内"""
+def limit_report_length(text, max_words=1500):
+    """限制报告长度到指定单词数以内 - 保留HTML结构"""
     if not text:
         return ""
     
@@ -129,40 +169,8 @@ def limit_report_length(text, max_words=500):
     if words_count <= max_words:
         return text
     
-    # 移除HTML标签以便于截断
-    clean_text = re.sub(r'<[^>]+>', '', text)
-    
-    # 按句子分割
-    sentences = re.split(r'[。！？.!?]', clean_text)
-    
-    # 逐步添加句子直到接近限制
-    result_parts = []
-    current_count = 0
-    
-    for sentence in sentences:
-        sentence = sentence.strip()
-        if not sentence:
-            continue
-            
-        sentence_word_count = count_words(sentence)
-        if current_count + sentence_word_count <= max_words:
-            result_parts.append(sentence)
-            current_count += sentence_word_count
-        else:
-            # 计算还能容纳多少词
-            remaining_words = max_words - current_count
-            if remaining_words > 0:
-                # 截断当前句子
-                words = re.findall(r'[\u4e00-\u9fff]|\b[a-zA-Z]+\b', sentence)
-                truncated_sentence = ''.join(words[:remaining_words])
-                result_parts.append(truncated_sentence)
-            break
-    
-    # 将文本重新组合
-    result_text = '。'.join(result_parts) + "..."
-    
-    # 再次转换为HTML格式
-    return convert_to_html(result_text)
+    # 直接返回原文，不截断，避免破坏HTML结构
+    return text
 
 
 class AgentRequest(BaseModel):
@@ -956,27 +964,23 @@ async def run_agent_markdown(request: AgentRequest):
 
 @app.post("/ai-analysis")
 async def ai_analysis(request: SleepAnalysisWithTimeRequest):
-    """AI分析 - 默认从数据库读取预计算结果，force_refresh=True时才重新计算"""
+    """AI分析 - 优先从数据库读取缓存，无缓存时自动生成并保存"""
     try:
         print(f"🤖 运行AI分析: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
 
-        # request.force_refresh = False
+        from improved_agent import get_cached_analysis, run_improved_agent
         
-        # 默认 force_refresh=False，从数据库读取缓存结果
+        # 构建查询字符串
+        query = f"请分析 {request.date} 的睡眠数据"
+        if request.device_sn:
+            query = f"[设备序列号: {request.device_sn}] {query}"
+        
+        # 非强制刷新时，优先检查数据库缓存
         if not request.force_refresh:
-            # 从 analysis_results 表读取已存储的分析结果
-            from improved_agent import get_cached_analysis
-            
-            # 构建查询字符串
-            query = f"请分析 {request.date} 的睡眠数据"
-            if request.device_sn:
-                query = f"[设备序列号: {request.device_sn}] {query}"
-            
-            # 从数据库获取缓存的分析结果
             cached_result = get_cached_analysis(query, request.date)
             
             if cached_result:
-                print(f"✅ 从数据库获取已存储的AI分析结果: {request.date}")
+                print(f"✅ 从数据库获取已存储的AI分析结果: {cached_result}")
                 
                 # 检查是否为无数据信息
                 if "暂无数据分析" in cached_result:
@@ -990,28 +994,18 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
                 # 将结果转换为HTML格式
                 html_result = convert_to_html(cached_result)
                 
-                # 限制报告长度到500词以内
-                limited_html_result = limit_report_length(html_result)
-                
                 return {
                     "success": True,
-                    "data": limited_html_result,
+                    "data": html_result,
                     "has_data": True
                 }
-            else:
-                # 数据库中没有缓存结果，返回提示信息
-                print(f"⚠️ 数据库中没有 {request.date} 的分析结果")
-                return {
-                    "success": True,
-                    "data": "<p>当前日期的分析结果尚未生成。请等待定时任务执行后再查询。</p>",
-                    "warning": "分析结果尚未生成",
-                    "has_data": False
-                }
+            
+            # 无缓存时，自动生成分析（而不是返回"请等待"）
+            print(f"⚠️ 数据库中没有 {request.date} 的分析结果，自动生成...")
+        else:
+            print(f"🔄 强制刷新，执行实时AI分析...")
         
-        # force_refresh=True 时，执行实时计算
-        print(f"🔄 强制刷新，执行实时AI分析...")
-        
-        # 首先检查数据可用性
+        # 检查数据可用性
         from src.tools.sleep_data_checker_tool import check_detailed_sleep_data_with_device
         
         if request.device_sn:
@@ -1043,19 +1037,18 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
                     "has_data": False
                 }
         
-        # 使用改进的智能体运行分析
-        from improved_agent import run_improved_agent
+        # 生成AI分析并自动保存到数据库
         result = run_improved_agent(
             request.date, 
             thread_id=f"ai_analysis_{request.date}", 
-            force_refresh=request.force_refresh,  # 硬编码为False强制不重新计算
+            force_refresh=True,  # 这里需要True才能生成新结果并保存
             include_formatted_time=True,
             device_sn=request.device_sn
         )
         
         # 将结果转换为HTML格式
         html_result = convert_to_html(result)
-        
+        logger.info(f"AI分析结果: {html_result}")
         
         return {
             "success": True,
@@ -1810,36 +1803,61 @@ def generate_comprehensive_report(sleep_data: dict, physio_data: dict, date: str
 def run_scheduler():
     """运行调度器，在后台执行定时任务"""
     def scheduled_analysis():
-        """执行定时分析任务"""
+        """执行定时分析任务 - 仅在无缓存时生成"""
         try:
             print(f"⏰ 执行每日定时AI分析任务: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             
             # 获取当前日期
             current_date = datetime.now().strftime('%Y-%m-%d')
             
-            # 检查当前日期是否有睡眠数据
+            # 首先检查是否已有缓存（用户可能已在10点前触发过）
+            from improved_agent import get_cached_analysis, run_improved_agent
+            query = f"请分析 {current_date} 的睡眠数据"
+            cached_result = get_cached_analysis(query, current_date)
+            
+            if cached_result:
+                print(f"✅ {current_date} 已存在分析缓存（用户已触发），跳过定时任务")
+                return
+            
+            # 无缓存，检查当前日期是否有睡眠数据
             from src.tools.sleep_data_checker_tool import check_detailed_sleep_data
             check_result = check_detailed_sleep_data(current_date)
             check_data = json.loads(check_result)
             has_data = check_data.get('data', {}).get('has_sleep_data', False)
             
             if has_data:
-                print(f"✅ {current_date} 存在睡眠数据，开始AI分析...")
+                print(f"✅ {current_date} 存在睡眠数据且无缓存，开始AI分析...")
                 
                 # 使用改进的智能体运行分析
-                from improved_agent import run_improved_agent
                 result = run_improved_agent(
                     current_date, 
                     thread_id=f"scheduled_ai_analysis_{current_date}", 
-                    force_refresh=False,
+                    force_refresh=True,  # 生成新结果并保存
                     include_formatted_time=True
                 )
                 
                 print(f"✅ 定时AI分析完成")
             else:
-                print(f"⚠️ {current_date} 不存在睡眠数据，跳过AI分析")
+                print(f"⚠️ {current_date} 不存在睡眠数据，尝试补偿机制...")
                 # 尝试触发数据收集
                 trigger_data_collection_sync(current_date)
+                
+                # 再次检查数据
+                check_result = check_detailed_sleep_data(current_date)
+                check_data = json.loads(check_result)
+                has_data = check_data.get('data', {}).get('has_sleep_data', False)
+                
+                if has_data:
+                    print(f"✅ 补偿机制成功获取数据，开始AI分析...")
+                    result = run_improved_agent(
+                        current_date, 
+                        thread_id=f"scheduled_ai_analysis_{current_date}", 
+                        force_refresh=True,
+                        include_formatted_time=True
+                    )
+                    print(f"✅ 定时AI分析完成")
+                else:
+                    print(f"⚠️ 补偿机制未能获取数据，跳过AI分析")
                 
         except Exception as e:
             print(f"❌ 定时AI分析任务失败: {str(e)}")

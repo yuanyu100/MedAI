@@ -1,7 +1,7 @@
 {
     "config": {
         "llm_type": "openai",
-        "model": "deepseek-ai/DeepSeek-V3", 
+        "model": "inclusionAI/Ling-mini-2.0",
         "temperature": 0.3,
         "top_p": 0.7,
         "max_completion_tokens": 10000,
