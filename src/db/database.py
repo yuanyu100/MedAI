@@ -756,13 +756,60 @@ class DatabaseManager:
         self.execute_command(insert_sql, params)
 
 
+    def create_sleep_stage_segments_table(self):
+        """创建睡眠阶段分段表"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS sleep_stage_segments (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            date DATE NOT NULL,
+            device_sn VARCHAR(100) NOT NULL,
+            segment_order INT NOT NULL,
+            label VARCHAR(50) NOT NULL,
+            value VARCHAR(20) NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_segment (date, device_sn, segment_order)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+        """
+        self.execute_command(create_table_sql)
+    
+    def store_sleep_stage_segments(self, date: str, device_sn: str, segments: list):
+        """存储睡眠阶段分段数据"""
+        # 首先创建表（如果不存在）
+        self.create_sleep_stage_segments_table()
+        
+        # 删除旧数据
+        delete_sql = """
+        DELETE FROM sleep_stage_segments 
+        WHERE date = :date AND device_sn = :device_sn
+        """
+        delete_params = {'date': date, 'device_sn': device_sn}
+        self.execute_command(delete_sql, delete_params)
+        
+        # 插入新数据
+        if segments:
+            insert_sql = """
+            INSERT INTO sleep_stage_segments (date, device_sn, segment_order, label, value)
+            VALUES (:date, :device_sn, :segment_order, :label, :value)
+            """
+            
+            for i, segment in enumerate(segments):
+                params = {
+                    'date': date,
+                    'device_sn': device_sn,
+                    'segment_order': i,
+                    'label': segment.get('label', ''),
+                    'value': segment.get('value', '')
+                }
+                self.execute_command(insert_sql, params)
+    
     def get_sleep_stage_segments(self, date: str, device_sn: str = None):
         """获取睡眠阶段细分数据"""
-        # 这个方法用于获取睡眠阶段的细分数据
-        # 如果没有单独的表，返回空 DataFrame
+        # 首先创建表（如果不存在）
+        self.create_sleep_stage_segments_table()
+        
         import pandas as pd
         
-        # 检查是否存在 sleep_stage_segments 表
         try:
             if device_sn:
                 query = """
@@ -782,7 +829,7 @@ class DatabaseManager:
             result = self.execute_query(query, params)
             return result
         except Exception as e:
-            # 如果表不存在或查询失败，返回空 DataFrame
+            # 如果查询失败，返回空 DataFrame
             return pd.DataFrame()
         
 

@@ -322,7 +322,7 @@ class SleepAnalysisDataModel(BaseModel):
     bed_exit_count: int = Field(default=0, ge=0, description="离床次数")
     sleep_prep_time_minutes: float = Field(default=0, ge=0, description="入睡准备时长(分钟)")
     sleep_phases: Optional[SleepPhasesModel] = Field(default=None, description="睡眠阶段详情")
-    sleep_stage_segments: Optional[List[SleepStageSegmentModel]] = Field(default=None, description="睡眠阶段分段")
+    sleep_stage_segments: List[SleepStageSegmentModel] = Field(default_factory=list, description="睡眠阶段分段")
     average_metrics: Optional[AverageMetricsModel] = Field(default=None, description="平均生理指标")
     summary: str = Field(default="", description="睡眠质量总结")
     device_sn: Optional[str] = Field(default=None, description="设备序列号")
@@ -406,7 +406,7 @@ class PhysiologicalAnalysisResponseModel(BaseModel):
 
 # ========== Database Record to Pydantic Model Transformation Functions ==========
 
-def transform_db_record_to_sleep_analysis(db_record: dict, sleep_stage_segments: list = None) -> SleepAnalysisDataModel:
+def transform_db_record_to_sleep_analysis(db_record: dict, sleep_stage_segments: list = []) -> SleepAnalysisDataModel:
     """
     将数据库平铺记录转换为 SleepAnalysisDataModel 嵌套结构
     
@@ -439,7 +439,7 @@ def transform_db_record_to_sleep_analysis(db_record: dict, sleep_stage_segments:
     )
     
     # 构建 sleep_stage_segments 列表
-    segments_list = None
+    segments_list = []
     if sleep_stage_segments:
         segments_list = [
             SleepStageSegmentModel(label=seg['label'], value=str(seg['value']))
@@ -521,48 +521,7 @@ def transform_db_record_to_physiological_analysis(db_record: dict) -> Physiologi
     )
 
 
-# 删除重复的SleepAnalysisWithTimeRequest定义
 
-# 为qa_retriever创建一个包装函数
-def create_sample_excel():
-    """创建示例Excel文件用于QA查询"""
-    # 创建一个示例数据集
-    sample_data = []
-    start_time = datetime.now() - timedelta(hours=24)
-    
-    for i in range(24 * 4):  # 每15分钟一条记录，共24小时
-        current_time = start_time + timedelta(minutes=i*15)
-        
-        # 模拟不同的数据类型
-        if i % 8 == 0:  # 每2小时一条状态数据
-            # 状态数据
-            status = "有人状态" if i % 16 != 0 else "无人状态"  # 交替有人/无人状态
-            sample_data.append({
-                '上传时间': current_time.strftime('%Y-%m-%d %H:%M:%S'),
-                '数据类型': '状态',
-                '数据内容': status
-            })
-        else:
-            # 周期数据
-            # 随机生成生理参数
-            heart_rate = 60 + (i % 10)  # 心率在60-70之间变化
-            respiration_rate = 15 + (i % 5)  # 呼吸频率在15-20之间变化
-            body_move_ratio = 2 + (i % 3)  # 体动占比2-5%
-            apnea_count = 1 if i % 20 == 0 else 0  # 每20条记录有一次呼吸暂停
-            
-            data_content = f"心率:{heart_rate}次/分钟;呼吸:{respiration_rate}次/分钟;心跳间期平均值:800毫秒;心跳间期均方根值:50毫秒;心跳间期标准差:40毫秒;心跳间期紊乱比例:15%;体动次数的占比:{body_move_ratio}%;呼吸暂停次数:{apnea_count}次"
-            
-            sample_data.append({
-                '上传时间': current_time.strftime('%Y-%m-%d %H:%M:%S'),
-                '数据类型': '周期数据',
-                '数据内容': data_content
-            })
-    
-    # 创建DataFrame并保存为Excel
-    df = pd.DataFrame(sample_data)
-    temp_file = os.path.join(tempfile.gettempdir(), 'sample_qa_data.xlsx')
-    df.to_excel(temp_file, index=False)
-    return temp_file
 
 
 def parse_data_content(content: str):
@@ -1336,31 +1295,6 @@ async def analyze_physiological(request: PhysiologicalAnalysisRequest) -> Physio
         })
 
 
-# @app.post("/qa")
-async def qa_query(request: QARequest):
-    """问答查询"""
-    try:
-        print(f"❓ 问答查询: {request.query}")
-        
-        # 创建示例数据文件
-        sample_file = create_sample_excel()
-        
-        # 执行问答查询（调用内部函数而不是工具装饰的函数）
-        result = qa_retrieve_internal(sample_file, request.query)
-        
-        return {
-            "success": True,
-            "answer": result
-        }
-        
-    except Exception as e:
-        print(f"❌ 问答查询失败: {str(e)}")
-        print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
 
 
 # 新增：生理指标趋势分析请求模型
@@ -1419,42 +1353,7 @@ async def health_check():
     }
 
 
-# 新增：睡眠数据检查端点
-# @app.post("/sleep-data-check")
-async def check_sleep_data(request: SleepDataCheckRequest):
-    """检查睡眠数据是否存在"""
-    try:
-        print(f"🔍 检查睡眠数据: {request.date}, 设备: {request.device_sn}")
-        
-        # 根据是否有设备序列号来决定如何获取数据
-        if request.device_sn:
-            # 如果提供了设备序列号，使用带设备的函数
-            result = check_detailed_sleep_data_with_device(request.date, request.device_sn)
-        else:
-            # 否则使用普通函数
-            result = check_detailed_sleep_data(request.date)
-        
-        # 解析结果
-        result_data = json.loads(result)
-        
-        # 直接返回结果但移除timestamp字段
-        filtered_result = {
-            "success": True,
-            "data": result_data
-        }
-        return filtered_result
-        
-    except Exception as e:
-        print(f"❌ 检查睡眠数据失败: {str(e)}")
-        print(traceback.format_exc())
-        
-        # 返回错误响应但移除timestamp字段
-        error_result = {
-            "success": False,
-            "error": str(e),
-            "message": "检查睡眠数据失败"
-        }
-        return error_result
+
 
 
 # 新增：周睡眠数据检查端点
