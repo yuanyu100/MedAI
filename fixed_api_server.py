@@ -1285,7 +1285,7 @@ class PhysiologicalTrendRequest(BaseModel):
     """生理指标趋势分析请求模型"""
     date: str  # 日期格式 YYYY-MM-DD
     metric: Optional[str] = None  # 指标类型，可选 'heart_rate' 或 'respiratory_rate'
-    device_sn: Optional[str] = None  # 设备序列号（可选）
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
     # 移除table_name参数，硬编码为vital_signs
 
 
@@ -1474,7 +1474,7 @@ async def get_comprehensive_report(request: ComprehensiveReportRequest):
         if not stored_data_raw.empty:
             logger.info("数据库中有数据，开始处理")
             stored_record = stored_data_raw.to_dict('records')[0]
-            logger.info(f"存储的记录: {stored_record}")
+
             
             # 获取sleep_stage_segments
             segments_raw = db_manager.get_sleep_stage_segments(request.date, request.device_sn)

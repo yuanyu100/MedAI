@@ -585,8 +585,12 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
                 # 格式化为自然语言描述，确保数字格式正确
                 formatted_time_str = f"昨晚我{bedtime_str[11:16]}上床，{sleep_start_time_str}入睡，{wakeup_time_str[11:16]}醒来，总卧床时长为{time_in_bed_minutes//60}小时{time_in_bed_minutes%60}分，睡眠时长为{sleep_duration_minutes//60}小时{sleep_duration_minutes%60}分。其中，深睡时长为{deep_sleep_minutes//60}小时{deep_sleep_minutes%60}分。\n"
                 formatted_time_str += f"昨晚的睡眠中，我的平均呼吸率为{avg_respiratory_rate:.1f}次/分钟，最低呼吸率为{min_respiratory_rate:.1f}次/分钟，最高呼吸率为{max_respiratory_rate:.1f}次/分钟，呼吸暂停为{apnea_events_per_hour:.1f}次/小时，最长呼吸暂停时长为{max_apnea_duration:.1f}秒。我的平均心率为{avg_heart_rate:.1f}次/分钟，最低心率为{min_heart_rate:.1f}次/分钟，最高心率为{max_heart_rate:.1f}次/分钟。"
-                formatted_time_str += f" 请对我昨晚的睡眠情况进行分析，并给出相关建议，不要把这些数据重复！！就是进行分析就好！不要输出这些数据！按照老年人可读性好的方式输出！几段话，挑重点觉得有必要说明的就说明，没必要说明的就不要输出！！！请尽量精简直接的建议，400字左右。不要客套话,不需要重复输出我的数据！！！"
-                
+                # formatted_time_str += f" 请对我昨晚的睡眠情况进行分析，并给出相关建议，不要把这些数据重复！！就是进行分析就好！不要输出这些数据！按照老年人可读性好的方式输出！几段话，挑重点觉得有必要说明的就说明，没必要说明的就不要输出！！！请尽量精简直接的建议，400字左右。不要客套话,不需要重复输出我的数据！！！"
+                formatted_time_str += f" 请根据系统提示词部分规范输出。分析：如“1. 睡眠时长极短：仅38分钟，远低于成人推荐的7-9小时，属于严重睡眠剥夺。2.呼吸与心率正常：呼吸率（14.8次/分）和心率（67.4次/分）均在健康范围，无呼吸暂停风险。"
+                formatted_time_str += f"这种，分析部分共200字以内"
+                formatted_time_str += f"建议：如：“1.优先延长睡眠时间：调整作息，至少卧床6-7小时，即使无法入睡也保持休息状态。2.排查觉醒原因：检查环境（噪音、光线）、睡前饮食（咖啡因/酒精）或情绪压力，避免睡前刺激。"
+                formatted_time_str += f"这种，建议部分共200字以内。"
+                formatted_time_str += f"每一部分3-4条，不许超出！！！。 "
                 formatted_time_input = formatted_time_str
 
                 print(formatted_time_input+"注意！！improved_agent533")
@@ -678,29 +682,7 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
     # 构建最终结果，将原始数据信息放在结果前面
     analysis_result = "\n".join(result) if result else "暂无数据分析"
     
-    # 限制结果长度不超过400字
-    MAX_LENGTH = 400
-    if len(analysis_result) > MAX_LENGTH:
-        # 找到合适的截断点，避免截断到中间
-        truncated_result = analysis_result[:MAX_LENGTH]
-        # 尝试在最后一个句号或逗号处截断
-        last_period = truncated_result.rfind('。')
-        last_comma = truncated_result.rfind('，')
-        
-        if last_period > MAX_LENGTH * 0.8:
-            truncated_result = truncated_result[:last_period + 1]
-        elif last_comma > MAX_LENGTH * 0.8:
-            truncated_result = truncated_result[:last_comma + 1]
-        
-        analysis_result = truncated_result + "..."
-    
-    # 如果存在formatted_time_input_local，则将其放在分析结果前面
-    # if formatted_time_input_local:
-    #     # 将原始数据信息作为HTML段落放在分析结果前
-    #     html_formatted_input = formatted_time_input_local.replace("\n", "<br>")  # 转换换行为HTML<br>标签
-    #     final_result = f"<div class=\"raw-data\">{html_formatted_input}</div><br><br>{analysis_result}"
-    # else:
-    #     final_result = analysis_result
+    # 不截断结果，返回完整内容
     final_result = analysis_result
 
     logger.debug(f"Final result: {final_result[:200]}...")  # 只记录前200个字符
