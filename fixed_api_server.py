@@ -294,6 +294,8 @@ class SleepStageSegmentModel(BaseModel):
     """睡眠阶段分段模型"""
     label: str = Field(..., description="睡眠阶段标签(深睡/浅睡/REM/清醒)")
     value: str = Field(..., description="持续时长(分钟)")
+    start_time: Optional[str] = Field(default=None, description="阶段起始时间")
+    end_time: Optional[str] = Field(default=None, description="阶段结束时间")
 
     class Config:
         extra = "allow"

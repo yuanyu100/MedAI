@@ -770,6 +770,8 @@ class DatabaseManager:
             segment_order INT NOT NULL,
             label VARCHAR(50) NOT NULL,
             value VARCHAR(20) NOT NULL,
+            start_time DATETIME DEFAULT NULL,
+            end_time DATETIME DEFAULT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
             UNIQUE KEY unique_segment (date, device_sn, segment_order)
@@ -793,8 +795,8 @@ class DatabaseManager:
         # 插入新数据
         if segments:
             insert_sql = """
-            INSERT INTO sleep_stage_segments (date, device_sn, segment_order, label, value)
-            VALUES (:date, :device_sn, :segment_order, :label, :value)
+            INSERT INTO sleep_stage_segments (date, device_sn, segment_order, label, value, start_time, end_time)
+            VALUES (:date, :device_sn, :segment_order, :label, :value, :start_time, :end_time)
             """
             
             for i, segment in enumerate(segments):
@@ -803,7 +805,9 @@ class DatabaseManager:
                     'device_sn': device_sn,
                     'segment_order': i,
                     'label': segment.get('label', ''),
-                    'value': segment.get('value', '')
+                    'value': segment.get('value', ''),
+                    'start_time': segment.get('start_time', None),
+                    'end_time': segment.get('end_time', None)
                 }
                 self.execute_command(insert_sql, params)
     

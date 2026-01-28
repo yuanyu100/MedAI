@@ -1083,17 +1083,58 @@ class SleepMetricsCalculator:
         """
         current_stage = None
         current_stage_duration = 0
+        current_stage_start_time = None
+        previous_stage_end_time = None
         
-        for stage_info in smoothed_stages:
+        for i, stage_info in enumerate(smoothed_stages):
             stage_value = stage_info['stage_value']
             time_interval = stage_info['time_interval']
+            stage_time = stage_info.get('time')
             
             if current_stage != stage_value:
                 if current_stage is not None:
+                    # 计算当前阶段的结束时间
+                    if current_stage_start_time:
+                        from datetime import datetime, timedelta
+                        try:
+                            if isinstance(current_stage_start_time, str):
+                                start_time = datetime.fromisoformat(current_stage_start_time.replace('Z', '+00:00'))
+                            else:
+                                start_time = current_stage_start_time
+                            
+                            # 计算当前阶段的结束时间
+                            # 如果不是最后一个阶段，使用下一阶段的开始时间作为当前阶段的结束时间
+                            if i < len(smoothed_stages) - 1:
+                                next_stage_info = smoothed_stages[i+1]
+                                next_stage_time = next_stage_info.get('time')
+                                if next_stage_time:
+                                    if isinstance(next_stage_time, str):
+                                        end_time = datetime.fromisoformat(next_stage_time.replace('Z', '+00:00'))
+                                    else:
+                                        end_time = next_stage_time
+                                else:
+                                    end_time = start_time + timedelta(minutes=current_stage_duration)
+                            else:
+                                end_time = start_time + timedelta(minutes=current_stage_duration)
+                            
+                            start_time_str = start_time.isoformat().replace('T', ' ')
+                            end_time_str = end_time.isoformat().replace('T', ' ')
+                            previous_stage_end_time = end_time
+                        except:
+                            start_time_str = None
+                            end_time_str = None
+                            previous_stage_end_time = None
+                    else:
+                        start_time_str = None
+                        end_time_str = None
+                        previous_stage_end_time = None
+                    
                     # 添加当前阶段到结果
                     result['sleep_stage_segments'].append({
                         "label": SleepStageAnalyzer.get_stage_label(current_stage),
-                        "value": str(int(current_stage_duration))
+                        "value": str(int(current_stage_duration)),
+                        "start_time": start_time_str,
+                        "end_time": end_time_str
                     })
                     
                     # 累加各阶段时长
@@ -1108,14 +1149,39 @@ class SleepMetricsCalculator:
                 
                 current_stage = stage_value
                 current_stage_duration = time_interval
+                # 使用前一阶段的结束时间作为当前阶段的开始时间
+                if previous_stage_end_time:
+                    current_stage_start_time = previous_stage_end_time
+                else:
+                    current_stage_start_time = stage_time
             else:
                 current_stage_duration += time_interval
         
         # 处理最后一个阶段
         if current_stage is not None:
+            # 计算最后一个阶段的结束时间
+            if current_stage_start_time:
+                from datetime import datetime, timedelta
+                try:
+                    if isinstance(current_stage_start_time, str):
+                        start_time = datetime.fromisoformat(current_stage_start_time.replace('Z', '+00:00'))
+                    else:
+                        start_time = current_stage_start_time
+                    end_time = start_time + timedelta(minutes=current_stage_duration)
+                    start_time_str = start_time.isoformat().replace('T', ' ')
+                    end_time_str = end_time.isoformat().replace('T', ' ')
+                except:
+                    start_time_str = None
+                    end_time_str = None
+            else:
+                start_time_str = None
+                end_time_str = None
+            
             result['sleep_stage_segments'].append({
                 "label": SleepStageAnalyzer.get_stage_label(current_stage),
-                "value": str(int(current_stage_duration))
+                "value": str(int(current_stage_duration)),
+                "start_time": start_time_str,
+                "end_time": end_time_str
             })
             
             if current_stage == 1:
@@ -1304,10 +1370,23 @@ class SleepMetricsCalculator:
             
             # 添加从就寝时间到入睡时间的清醒阶段
             if sleep_prep_time > 0:
+                # 确定清醒阶段的结束时间
+                # 如果有睡眠阶段数据，使用第一个睡眠阶段的开始时间作为清醒阶段的结束时间
+                if sleep_phases_data['sleep_stage_segments']:
+                    first_stage = sleep_phases_data['sleep_stage_segments'][0]
+                    if first_stage.get('start_time'):
+                        awake_end_time_str = first_stage['start_time']
+                    else:
+                        awake_end_time_str = sleep_start_time.isoformat().replace('T', ' ')
+                else:
+                    awake_end_time_str = sleep_start_time.isoformat().replace('T', ' ')
+                
                 # 在sleep_stage_segments开头添加清醒阶段
                 sleep_phases_data['sleep_stage_segments'].insert(0, {
                     "label": "清醒",
-                    "value": str(int(sleep_prep_time))
+                    "value": str(int(sleep_prep_time)),
+                    "start_time": basic_metrics['bedtime'].isoformat().replace('T', ' '),
+                    "end_time": awake_end_time_str
                 })
                 # 同时更新清醒时长
                 sleep_phases_data['awake_duration'] += sleep_prep_time
@@ -1384,7 +1463,7 @@ def convert_numpy_types(obj):
     elif isinstance(obj, np.ndarray):
         return obj.tolist()
     elif pd.api.types.is_datetime64_any_dtype(type(obj)) or isinstance(obj, (pd.Timestamp, datetime)):
-        return obj.isoformat() if hasattr(obj, 'isoformat') else str(obj)
+        return obj.isoformat().replace('T', ' ') if hasattr(obj, 'isoformat') else str(obj)
     else:
         return obj
 
