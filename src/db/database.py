@@ -33,6 +33,7 @@ class DatabaseManager:
     def execute_query(self, query: str, params: Optional[dict] = None):
         """执行查询"""
         import pandas as pd
+        from decimal import Decimal
         if params:
             # 使用SQLAlchemy的text函数和参数绑定
             from sqlalchemy import text
@@ -40,16 +41,48 @@ class DatabaseManager:
             # 使用连接执行查询并返回结果
             with self.engine.connect() as conn:
                 result = conn.execute(stmt, params)
+                # 获取结果
+                rows = result.fetchall()
+                # 将Decimal类型转换为普通Python类型
+                converted_rows = []
+                for row in rows:
+                    converted_row = []
+                    for value in row:
+                        if isinstance(value, Decimal):
+                            # 如果是整数Decimal，转换为int，否则转换为float
+                            if value % 1 == 0:
+                                converted_row.append(int(value))
+                            else:
+                                converted_row.append(float(value))
+                        else:
+                            converted_row.append(value)
+                    converted_rows.append(converted_row)
                 # 将结果转换为DataFrame
-                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                df = pd.DataFrame(converted_rows, columns=result.keys())
                 return df
         else:
             # 使用连接执行查询，避免pandas直接使用engine时可能触发的SQLite检查
             from sqlalchemy import text
             with self.engine.connect() as conn:
                 result = conn.execute(text(query))
+                # 获取结果
+                rows = result.fetchall()
+                # 将Decimal类型转换为普通Python类型
+                converted_rows = []
+                for row in rows:
+                    converted_row = []
+                    for value in row:
+                        if isinstance(value, Decimal):
+                            # 如果是整数Decimal，转换为int，否则转换为float
+                            if value % 1 == 0:
+                                converted_row.append(int(value))
+                            else:
+                                converted_row.append(float(value))
+                        else:
+                            converted_row.append(value)
+                    converted_rows.append(converted_row)
                 # 将结果转换为DataFrame
-                df = pd.DataFrame(result.fetchall(), columns=result.keys())
+                df = pd.DataFrame(converted_rows, columns=result.keys())
                 return df
     
     def execute_command(self, command: str, params: Optional[dict] = None):
@@ -550,6 +583,30 @@ class DatabaseManager:
             WHERE date = :date
             """
             params = {'date': date}
+        
+        result = self.execute_query(query, params)
+        return result
+
+
+    def get_calculated_sleep_data_for_date_range(self, start_date: str, end_date: str, device_sn: str = None):
+        """获取指定日期范围内的计算得出的睡眠数据"""
+        # 首先确保表存在
+        self.create_calculated_sleep_data_table()
+        
+        if device_sn:
+            query = """
+            SELECT * FROM calculated_sleep_data 
+            WHERE date BETWEEN :start_date AND :end_date AND device_sn = :device_sn
+            ORDER BY date ASC
+            """
+            params = {'start_date': start_date, 'end_date': end_date, 'device_sn': device_sn}
+        else:
+            query = """
+            SELECT * FROM calculated_sleep_data 
+            WHERE date BETWEEN :start_date AND :end_date
+            ORDER BY date ASC
+            """
+            params = {'start_date': start_date, 'end_date': end_date}
         
         result = self.execute_query(query, params)
         return result

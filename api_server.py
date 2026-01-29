@@ -19,12 +19,9 @@ from pydantic import BaseModel
 import uvicorn
 from langchain_core.messages import HumanMessage
 
-from src.agents.agent import build_agent
-
 from src.tools.bed_monitoring_db_analyzer import analyze_bed_monitoring_from_db
 
-from src.tools.analyze_trend_tool import analyze_trend_and_pattern
-from src.tools.qa_retriever import qa_retriever
+from src.tools.analyze_trend_tool import analyze_trend_and_pattern, analyze_trend_from_database
 
 
 class AgentRequest(BaseModel):
@@ -60,6 +57,14 @@ class QARequest(BaseModel):
     query: str
 
 
+class TrendAnalysisRequest(BaseModel):
+    """趋势分析请求模型"""
+    table_name: Optional[str] = "device_data"
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    device_sn: Optional[str] = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用程序生命周期管理"""
@@ -91,6 +96,7 @@ async def root():
             "POST /agent/run": "运行智能体",
 
             "POST /analysis/database": "分析数据库数据",
+            "POST /analysis/trend": "分析多天监护数据趋势",
             "POST /visualization": "生成可视化报告",
 
             "POST /trend": "趋势分析",
@@ -106,28 +112,11 @@ async def run_agent(request: AgentRequest):
     try:
         print(f"🔄 运行智能体，查询: {request.query}")
         
-        # 构建智能体
-        agent = build_agent()
-        
-        # 准备输入消息
-        messages = [HumanMessage(content=request.query)]
-        
-        # 配置会话
-        config = {"configurable": {"thread_id": request.thread_id}}
-        
-        # 调用智能体
-        response = agent.invoke({"messages": messages}, config=config)
-        
-        # 提取响应内容
-        result = []
-        for msg in response.get('messages', []):
-            if hasattr(msg, 'content') and msg.content:
-                result.append(str(msg.content))
-        
+        # 智能体功能暂时不可用
         return {
-            "success": True,
-            "result": result,
-            "thread_id": request.thread_id
+            "success": False,
+            "error": "Agent functionality is temporarily disabled",
+            "message": "The agent module is not available at this time"
         }
         
     except Exception as e:
@@ -278,23 +267,49 @@ async def qa_query(request: QARequest):
     try:
         print(f"❓ 问答查询: {request.query}")
         
-        # 创建示例数据文件
-        sample_file = create_sample_excel()
-        
-        # 创建MockRuntime对象
-        runtime = MockRuntime()
-        
-        # 执行问答查询（调用内部函数而不是工具装饰的函数）
-        from src.tools.qa_retriever import qa_retrieve_internal
-        result = qa_retrieve_internal(sample_file, request.query)
-        
+        # 问答功能暂时不可用
         return {
-            "success": True,
-            "answer": result
+            "success": False,
+            "error": "QA functionality is temporarily disabled",
+            "message": "The QA module is not available at this time"
         }
         
     except Exception as e:
         print(f"❌ 问答查询失败: {str(e)}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail={
+            "success": False,
+            "error": str(e),
+            "traceback": traceback.format_exc()
+        })
+
+
+@app.post("/analysis/trend")
+async def analyze_trend_data(request: TrendAnalysisRequest):
+    """分析多天监护数据趋势"""
+    try:
+        print(f"📈 分析多天监护数据趋势")
+        print(f"  表名: {request.table_name}")
+        print(f"  开始日期: {request.start_date}")
+        print(f"  结束日期: {request.end_date}")
+        print(f"  设备序列号: {request.device_sn}")
+        
+        # 执行趋势分析
+        result = analyze_trend_from_database(
+            table_name=request.table_name,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            device_sn=request.device_sn
+        )
+        analysis_result = json.loads(result)
+        
+        return {
+            "success": True,
+            "data": analysis_result
+        }
+        
+    except Exception as e:
+        print(f"❌ 趋势分析失败: {str(e)}")
         print(traceback.format_exc())
         raise HTTPException(status_code=500, detail={
             "success": False,

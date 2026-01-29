@@ -52,6 +52,8 @@ from src.tools.sleep_analyzer_tool import (
     analyze_single_day_sleep_data,
     analyze_single_day_sleep_data_with_device
 )
+# 导入趋势分析工具
+from src.tools.analyze_trend_tool import analyze_trend_from_database
 
 def convert_to_html(text):
     """将文本转换为HTML格式"""
@@ -160,19 +162,6 @@ def count_words(text):
     return chinese_chars + english_words
 
 
-def limit_report_length(text, max_words=1500):
-    """限制报告长度到指定单词数以内 - 保留HTML结构"""
-    if not text:
-        return ""
-    
-    words_count = count_words(text)
-    if words_count <= max_words:
-        return text
-    
-    # 直接返回原文，不截断，避免破坏HTML结构
-    return text
-
-
 class AgentRequest(BaseModel):
     """智能体请求模型"""
     date: str  # 日期格式 YYYY-MM-DD
@@ -190,6 +179,12 @@ class SleepAnalysisWithTimeRequest(BaseModel):
     force_refresh: Optional[bool] = False  # 是否强制刷新，为True时不使用缓存
 
 
+class SleepSummaryRequest(BaseModel):
+    """睡眠总结请求模型"""
+    summary_type: str = Field(..., description="总结类型：'week' 或 'month'", pattern="^(week|month)$")
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+
+
 class WeeklySleepDataCheckRequest(BaseModel):
     """周睡眠数据检查请求模型"""
     start_date: str = Field(..., description="开始日期，格式如 '2024-12-20'")
@@ -202,6 +197,12 @@ class RecentWeeklySleepDataCheckRequest(BaseModel):
     num_weeks: int = Field(1, ge=1, le=4, description="检查的周数，最多4周")
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
     # 移除table_name参数，硬编码为vital_signs
+
+
+class WeeklyOrMonthlyDataRequest(BaseModel):
+    """周/月数据请求模型"""
+    data_type: str = Field(..., description="数据类型：'week' 或 'month'", pattern="^(week|month)$")
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
 
 
 class AnalysisRequest(BaseModel):
@@ -830,8 +831,6 @@ async def lifespan(app: FastAPI):
     """应用程序生命周期管理"""
     print("🚀 启动修复版智能体API服务器...")
     # 设置环境变量
-    # os.environ.setdefault("QWEN_API_KEY", "sk-2ad6355b98dd43668a5eeb21e50e4642")
-    # os.environ.setdefault("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
     yield
     # 关闭时的清理
 
@@ -854,6 +853,7 @@ async def root():
         "endpoints": {
             "POST /agent/run": "运行智能体（支持device_sn参数）",
             "POST /analysis/database": "分析数据库数据",
+            "POST /weeklyOrMonthly/data": "获取周/月数据（支持图表数据源格式）",
             "POST /visualization": "生成可视化报告",
             "POST /trend": "趋势分析",
             "POST /qa": "问答查询",
@@ -865,6 +865,7 @@ async def root():
             "POST /recent-weekly-sleep-data-check": "近期周睡眠数据检查（检查最近几周的睡眠数据）",
             "POST /ai-analysis": "AI分析（使用格式化的时间信息作为用户提示，支持device_sn参数）",
             "POST /comprehensive-report": "综合报告（支持device_sn参数）",
+            "POST /weeklyOrMonthly/analysis": "周度/月度分析（睡眠、心率、呼吸频率、呼吸暂停）",
             "GET /health": "健康检查"
         }
     }
@@ -1332,6 +1333,45 @@ async def health_check():
     }
 
 
+@app.post("/weeklyOrMonthly/data")
+async def get_weekly_or_monthly_data(request: WeeklyOrMonthlyDataRequest):
+    """获取周/月数据"""
+    try:
+        print(f"📊 获取{request.data_type}数据: 设备={request.device_sn}")
+        
+        # 调用趋势分析工具
+        result = analyze_trend_from_database(
+            data_type=request.data_type,
+            device_sn=request.device_sn
+        )
+        
+        # 解析结果
+        result_dict = json.loads(result)
+        
+        # 处理错误情况
+        if not result_dict.get("success"):
+            return {
+                "success": False,
+                "error": result_dict.get("error"),
+                "message": result_dict.get("message")
+            }
+        
+        # 构建成功响应
+        return {
+            "success": True,
+            "data": result_dict.get("data")
+        }
+        
+    except Exception as e:
+        print(f"❌ 获取周/月数据失败: {str(e)}")
+        print(traceback.format_exc())
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "获取周/月数据失败"
+        }
+
+
 
 
 
@@ -1657,73 +1697,173 @@ def generate_comprehensive_report(sleep_data: dict, physio_data: dict, date: str
                     return "◎", f"<={normal_range}"
                 else:
                     return "↑", f">{normal_range}"
-    
-    # Generate metric evaluations
-    sleep_duration_eval, sleep_duration_ref = evaluate_value(sleep_duration_hours, (6.5, 12))  # 睡眠时长正常范围6.5-12小时
-    deep_sleep_eval, deep_sleep_ref = evaluate_value(deep_sleep_minutes, (40, 240))  # 深睡眠正常范围40-240分钟
-    sleep_prep_eval, sleep_prep_ref = evaluate_value(sleep_prep_time_minutes, (0, 30))  # 入睡准备时间正常范围0-30分钟
-    apnea_eval, apnea_ref = evaluate_value(apnea_per_hour, (0, 5))  # 呼吸暂停正常范围0-5次/小时
-    avg_hr_eval, avg_hr_ref = evaluate_value(avg_heart_rate, (55, 70))  # 平均心率正常范围55-70次/分钟
-    min_hr_eval, min_hr_ref = evaluate_value(min_heart_rate, 52, is_higher_better=True)  # 最低心率应≥52
-    max_hr_eval, max_hr_ref = evaluate_value(max_heart_rate, 85)  # 最高心率应≤85
-    avg_resp_eval, avg_resp_ref = evaluate_value(avg_respiratory_rate, (11, 18))  # 平均呼吸频率正常范围11-18次/分钟)
-    
-    # Return comprehensive report
-    report = {
-        "date": date,
-        "indicators": [
-            {
-                "name": "总睡眠时长",
-                "value": f"{sleep_duration_hours:.1f} 小时",
-                "result": sleep_duration_eval,
-                "reference": sleep_duration_ref
-            },
-            {
-                "name": "深睡眠时长",
-                "value": f"{deep_sleep_minutes} 分钟",
-                "result": deep_sleep_eval,
-                "reference": f">{deep_sleep_ref.split('>')[-1]}" if '>' in deep_sleep_ref else deep_sleep_ref
-            },
-            {
-                "name": "入睡准备时间",
-                "value": f"{sleep_prep_time_minutes} 分钟",
-                "result": sleep_prep_eval,
-                "reference": sleep_prep_ref.split('<')[-1] if '<' in sleep_prep_ref else sleep_prep_ref
-            },
-            {
-                "name": "呼吸暂停事件",
-                "value": f"{apnea_per_hour:.1f} 次/小时",
-                "result": apnea_eval,
-                "reference": apnea_ref.split('<')[-1] if '<' in apnea_ref else apnea_ref
-            },
-            {
-                "name": "平均心率",
-                "value": f"{avg_heart_rate} 次/分钟",
-                "result": avg_hr_eval,
-                "reference": avg_hr_ref
-            },
-            {
-                "name": "最低心率",
-                "value": f"{min_heart_rate} 次/分钟",
-                "result": min_hr_eval,
-                "reference": min_hr_ref.split('≥')[-1] if '≥' in min_hr_ref else f"≥{min_heart_rate}"
-            },
-            {
-                "name": "最高心率",
-                "value": f"{max_heart_rate} 次/分钟",
-                "result": max_hr_eval,
-                "reference": max_hr_ref.split('≤')[-1] if '≤' in max_hr_ref else f"≤{max_heart_rate}"
-            },
-            {
-                "name": "平均呼吸频率",
-                "value": f"{avg_respiratory_rate} 次/分钟",
-                "result": avg_resp_eval,
-                "reference": avg_resp_ref
+
+
+@app.post("/weeklyOrMonthly/analysis")
+async def weekly_or_monthly_analysis(request: SleepSummaryRequest):
+    """周度/月度分析（睡眠、心率、呼吸频率、呼吸暂停）"""
+    try:
+        print(f"📋 周度/月度分析: {request.summary_type}, 设备: {request.device_sn}")
+        
+        # 计算日期范围
+        from datetime import datetime, timedelta
+        today = datetime.now()
+        
+        if request.summary_type == 'week':
+            # 过去7天
+            start_date = (today - timedelta(days=6)).strftime('%Y-%m-%d')
+            end_date = today.strftime('%Y-%m-%d')
+        else:  # month
+            # 过去30天
+            start_date = (today - timedelta(days=29)).strftime('%Y-%m-%d')
+            end_date = today.strftime('%Y-%m-%d')
+        
+        print(f"日期范围: {start_date} 至 {end_date}")
+        
+        # 从数据库获取睡眠数据
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        sleep_data = db_manager.get_calculated_sleep_data_for_date_range(start_date, end_date, request.device_sn)
+        
+        if sleep_data.empty:
+            return {
+                "success": True,
+                "data": {
+                    "ai_summary": "暂无足够数据生成总结",
+                    "分析结果": "无数据",
+                    "message": "当前日期范围内没有可用的睡眠数据"
+                },
+                "has_data": False
             }
-        ]
-    }
-    
-    return report
+        
+        # 计算各项指标的平均值
+        # 睡眠时长（小时）
+        sleep_data['sleep_duration_minutes'] = pd.to_numeric(sleep_data['sleep_duration_minutes'], errors='coerce')
+        avg_sleep_duration = sleep_data['sleep_duration_minutes'].mean() / 60
+        
+        # 心率
+        sleep_data['avg_heart_rate'] = pd.to_numeric(sleep_data['avg_heart_rate'], errors='coerce')
+        avg_heart_rate = sleep_data['avg_heart_rate'].mean()
+        
+        # 呼吸频率
+        sleep_data['avg_respiratory_rate'] = pd.to_numeric(sleep_data['avg_respiratory_rate'], errors='coerce')
+        avg_respiratory_rate = sleep_data['avg_respiratory_rate'].mean()
+        
+        # 呼吸暂停次数
+        sleep_data['apnea_count'] = pd.to_numeric(sleep_data['apnea_count'], errors='coerce')
+        avg_apnea_count = sleep_data['apnea_count'].mean()
+        
+        # 统计达标情况
+        # 睡眠时长：7-9小时
+        recommended_sleep_min = 7
+        recommended_sleep_max = 9
+        sleep_compliant_days = len(sleep_data[
+            (sleep_data['sleep_duration_minutes'] / 60 >= recommended_sleep_min) & 
+            (sleep_data['sleep_duration_minutes'] / 60 <= recommended_sleep_max)
+        ])
+        
+        # 心率：60-100次/分钟
+        recommended_hr_min = 60
+        recommended_hr_max = 100
+        hr_compliant_days = len(sleep_data[
+            (sleep_data['avg_heart_rate'] >= recommended_hr_min) & 
+            (sleep_data['avg_heart_rate'] <= recommended_hr_max)
+        ])
+        
+        # 呼吸频率：12-20次/分钟
+        recommended_rr_min = 12
+        recommended_rr_max = 20
+        rr_compliant_days = len(sleep_data[
+            (sleep_data['avg_respiratory_rate'] >= recommended_rr_min) & 
+            (sleep_data['avg_respiratory_rate'] <= recommended_rr_max)
+        ])
+        
+        # 呼吸暂停：< 5次/小时
+        recommended_apnea_max = 5
+        apnea_compliant_days = len(sleep_data[
+            sleep_data['apnea_count'] < recommended_apnea_max
+        ])
+        
+        # 生成AI总结
+        summary_parts = []
+        
+        if avg_sleep_duration < recommended_sleep_min:
+            summary_parts.append("睡眠时长普遍不足，建议增加睡眠时间。")
+        elif avg_sleep_duration > recommended_sleep_max:
+            summary_parts.append("睡眠时长过长，建议适当调整作息时间。")
+        else:
+            summary_parts.append("睡眠时长适中。")
+        
+        if avg_heart_rate < recommended_hr_min:
+            summary_parts.append("心率偏低，建议咨询医生。")
+        elif avg_heart_rate > recommended_hr_max:
+            summary_parts.append("心率偏高，建议减少咖啡因摄入并适当运动。")
+        else:
+            summary_parts.append("心率正常。")
+        
+        if avg_respiratory_rate < recommended_rr_min:
+            summary_parts.append("呼吸频率偏低，建议咨询医生。")
+        elif avg_respiratory_rate > recommended_rr_max:
+            summary_parts.append("呼吸频率偏高，建议保持室内空气流通。")
+        else:
+            summary_parts.append("呼吸频率正常。")
+        
+        if avg_apnea_count >= recommended_apnea_max:
+            summary_parts.append("呼吸暂停次数较多，建议咨询医生进行进一步检查。")
+        else:
+            summary_parts.append("呼吸暂停次数在正常范围内。")
+        
+        # 构建完整的AI总结
+        period_type = "本周" if request.summary_type == 'week' else "本月"
+        ai_summary = f"{period_type}分析结果：" + " ".join(summary_parts)
+        
+        # 构建响应数据
+        response_data = {
+            "ai_summary": ai_summary,
+            "分析结果": {
+                "睡眠时长": {
+                    "平均值": f"{avg_sleep_duration:.1f} 小时",
+                    "达标天数": sleep_compliant_days,
+                    "推荐范围": "7-9小时"
+                },
+                "心率": {
+                    "平均值": f"{avg_heart_rate:.1f} 次/分钟",
+                    "达标天数": hr_compliant_days,
+                    "推荐范围": "60-100次/分钟"
+                },
+                "呼吸频率": {
+                    "平均值": f"{avg_respiratory_rate:.1f} 次/分钟",
+                    "达标天数": rr_compliant_days,
+                    "推荐范围": "12-20次/分钟"
+                },
+                "呼吸暂停": {
+                    "平均值": f"{avg_apnea_count:.1f} 次",
+                    "达标天数": apnea_compliant_days,
+                    "推荐范围": "< 5次"
+                }
+            },
+            "统计周期": f"{start_date} 至 {end_date}",
+            "总天数": len(sleep_data)
+        }
+        
+        return {
+            "success": True,
+            "data": response_data,
+            "has_data": True
+        }
+        
+    except Exception as e:
+        print(f"❌ 周度/月度分析失败: {str(e)}")
+        print(traceback.format_exc())
+        
+        return {
+            "success": False,
+            "error": str(e),
+            "message": "周度/月度分析失败"
+        }
+
+
+
 
 
 def run_scheduler():
