@@ -4,12 +4,11 @@
 import json
 from typing import Dict, Any, List
 from langchain.tools import tool
-from langchain.tools import ToolRuntime
 from src.db.database import get_db_manager
 
 
 @tool
-def query_database_tables(runtime: ToolRuntime = None) -> str:
+def query_database_tables(runtime = None) -> str:
     """
     查询数据库中可用的表信息
     
@@ -77,7 +76,7 @@ def query_database_tables(runtime: ToolRuntime = None) -> str:
 
 
 @tool
-def query_table_data(table_name: str, limit: int = 10, runtime: ToolRuntime = None) -> str:
+def query_table_data(table_name: str, limit: int = 10, runtime = None) -> str:
     """
     查询指定表的数据
     
@@ -124,7 +123,7 @@ def query_table_data(table_name: str, limit: int = 10, runtime: ToolRuntime = No
 
 
 @tool
-def get_available_sleep_dates(runtime: ToolRuntime = None) -> str:
+def get_available_sleep_dates(runtime = None) -> str:
     """
     获取数据库中可用的睡眠数据日期列表
     
@@ -166,7 +165,7 @@ def get_available_sleep_dates(runtime: ToolRuntime = None) -> str:
 
 
 @tool  
-def query_sleep_data_for_date(date: str, table_name: str = "vital_signs", runtime: ToolRuntime = None) -> str:
+def query_sleep_data_for_date(date: str, table_name: str = "vital_signs", runtime = None) -> str:
     """
     查询指定日期的睡眠数据
     
@@ -221,7 +220,7 @@ def query_sleep_data_for_date(date: str, table_name: str = "vital_signs", runtim
 
 
 @tool
-def create_vital_signs_table(runtime: ToolRuntime = None) -> str:
+def create_vital_signs_table(runtime = None) -> str:
     """
     创建 vital_signs 表
     
@@ -245,7 +244,7 @@ def create_vital_signs_table(runtime: ToolRuntime = None) -> str:
 
 
 @tool
-def insert_vital_signs_data(data: dict, runtime: ToolRuntime = None) -> str:
+def insert_vital_signs_data(data: dict, runtime = None) -> str:
     """
     插入生命体征数据到 vital_signs 表
     

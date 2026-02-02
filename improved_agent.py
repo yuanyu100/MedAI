@@ -3,6 +3,17 @@
 改进版智能体 - 支持外部系统提示词文件和数据存储
 """
 
+# 尝试导入可能导致问题的库
+import sys
+try:
+    # 尝试导入 torch 相关的库
+    import torch
+    import transformers
+    TORCH_AVAILABLE = True
+except (ImportError, OSError):
+    print("⚠️ 无法导入 torch 或 transformers，相关功能将不可用")
+    TORCH_AVAILABLE = False
+
 import os
 import json
 import logging
@@ -14,14 +25,28 @@ from typing import Annotated, List
 import threading
 import openai
 
+# 尝试导入 ChatOllama，但如果失败，设置为 None
+ChatOllama = None
 try:
     from langchain_ollama import ChatOllama
 except ImportError:
-    from langchain_community.chat_models import ChatOllama
-from langgraph.graph import MessagesState
-from langgraph.graph.message import add_messages
-from langchain_core.messages import BaseMessage
-from langchain_core.runnables import RunnablePassthrough
+    try:
+        from langchain_community.chat_models import ChatOllama
+    except ImportError:
+        print("⚠️ 无法导入 ChatOllama，相关功能将不可用")
+
+# 尝试导入其他依赖项
+MessagesState = None
+add_messages = None
+BaseMessage = None
+RunnablePassthrough = None
+try:
+    from langgraph.graph import MessagesState
+    from langgraph.graph.message import add_messages
+    from langchain_core.messages import BaseMessage
+    from langchain_core.runnables import RunnablePassthrough
+except ImportError:
+    print("⚠️ 无法导入 langgraph 相关依赖，相关功能将不可用")
 
 
 """
@@ -351,10 +376,13 @@ def build_improved_agent(config_file_path=None):
         api_key = llm_config.get("api_key", os.getenv("OPENAI_API_KEY", ""))
         
         # 设置OpenAI客户端
+        import httpx
+        # 创建一个不包含proxies参数的HTTP客户端
+        http_client = httpx.Client(timeout=timeout)
         client = openai.OpenAI(
             base_url=base_url,
             api_key=api_key,
-            timeout=timeout
+            http_client=http_client
         )
         
         # 创建一个简单的代理函数

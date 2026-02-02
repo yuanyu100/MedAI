@@ -9,7 +9,7 @@ import numpy as np
 from datetime import datetime, timedelta, time
 from typing import Dict, List, Optional
 import warnings
-from langchain.tools import tool, ToolRuntime
+from langchain_community.tools import tool
 warnings.filterwarnings('ignore')
 
 # 配置日志
@@ -483,7 +483,7 @@ def analyze_single_day_physiological_data_with_device(date_str: str, device_sn: 
 
 
 @tool
-def analyze_physiological_by_date(date: str, runtime: ToolRuntime = None, table_name: str = "vital_signs") -> str:
+def analyze_physiological_by_date(date: str, runtime: object = None, table_name: str = "vital_signs") -> str:
     """
     根据指定日期分析生理指标数据
     
@@ -912,7 +912,7 @@ def format_physiological_analysis_natural_language(date_str: str, device_sn: str
 
 
 @tool
-def store_calculated_physiological_data(physiological_analysis_result: str, runtime: ToolRuntime = None) -> str:
+def store_calculated_physiological_data(physiological_analysis_result: str, runtime: object = None) -> str:
     """
     将计算得出的生理指标分析结果存储到数据库中
     
@@ -997,7 +997,7 @@ def store_calculated_physiological_data(physiological_analysis_result: str, runt
 
 
 @tool
-def get_stored_physiological_data(date: str, device_sn: str = None, runtime: ToolRuntime = None) -> str:
+def get_stored_physiological_data(date: str, device_sn: str = None, runtime: object = None) -> str:
     """
     从数据库中获取已存储的生理指标分析数据
     

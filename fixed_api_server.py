@@ -10,7 +10,7 @@ import logging
 import traceback
 from typing import Dict, Optional
 from contextlib import asynccontextmanager
-from langchain.tools import tool, ToolRuntime
+from langchain_community.tools import tool
 import schedule
 import threading
 import time as time_module
@@ -34,7 +34,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 使用改进的智能体
-from improved_agent import run_improved_agent
+# 尝试导入 improved_agent，但如果失败，设置为 None
+run_improved_agent = None
+try:
+    from improved_agent import run_improved_agent
+except ImportError:
+    print("⚠️ 无法导入 improved_agent，相关功能将不可用")
+except SystemExit:
+    print("⚠️ improved_agent 初始化失败，相关功能将不可用")
 
 # 导入生理指标趋势工具
 from src.tools.physiological_trend_tool import get_physiological_trend_data, get_physiological_trend_data_by_metric
@@ -182,6 +189,7 @@ class SleepAnalysisWithTimeRequest(BaseModel):
 class SleepSummaryRequest(BaseModel):
     """睡眠总结请求模型"""
     summary_type: str = Field(..., description="总结类型：'week' 或 'month'", pattern="^(week|month)$")
+    datetime: Optional[str] = Field(None, description="时间，格式如 '2024-12-20 14:30:00'，默认为当前时间")
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
 
 
@@ -202,6 +210,7 @@ class RecentWeeklySleepDataCheckRequest(BaseModel):
 class WeeklyOrMonthlyDataRequest(BaseModel):
     """周/月数据请求模型"""
     data_type: str = Field(..., description="数据类型：'week' 或 'month'", pattern="^(week|month)$")
+    datetime: Optional[str] = Field(None, description="时间，格式如 '2024-12-20 14:30:00'，默认为当前时间")
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
 
 
@@ -878,6 +887,9 @@ async def run_agent_endpoint(request: AgentRequest):
         print(f"🤖 运行智能体: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
         
         # 运行智能体
+        if run_improved_agent is None:
+            return {"success": False, "error": "智能体功能不可用", "message": "智能体相关依赖未正确安装"}
+            
         result = run_improved_agent(
             date=request.date,
             thread_id=request.thread_id,
@@ -895,11 +907,7 @@ async def run_agent_endpoint(request: AgentRequest):
     except Exception as e:
         print(f"❌ 智能体运行失败: {str(e)}")
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
+        return {"success": False, "error": str(e), "message": "智能体运行失败"}
 
 
 # @app.post("/agent/run-markdown")
@@ -908,6 +916,10 @@ async def run_agent_markdown(request: AgentRequest):
     try:
         print(f"🔄 运行智能体并返回Markdown格式，日期: {request.date}, 强制刷新: {request.force_refresh}, 包含格式化时间: {request.include_formatted_time}, 格式化时间输入: {request.formatted_time_input}")
         
+        # 运行智能体
+        if run_improved_agent is None:
+            return PlainTextResponse(content="智能体功能不可用", media_type="text/markdown")
+            
         # 使用改进的智能体运行分析，传入日期参数和格式化时间选项
         result = run_improved_agent(request.date, request.thread_id, force_refresh=request.force_refresh, include_formatted_time=request.include_formatted_time, formatted_time_input=request.formatted_time_input)
         
@@ -917,11 +929,7 @@ async def run_agent_markdown(request: AgentRequest):
     except Exception as e:
         print(f"❌ 运行智能体失败: {str(e)}")
         print(traceback.format_exc())
-        raise HTTPException(status_code=500, detail={
-            "success": False,
-            "error": str(e),
-            "traceback": traceback.format_exc()
-        })
+        return PlainTextResponse(content=f"运行智能体失败: {str(e)}", media_type="text/markdown")
 
 
 @app.post("/ai-analysis")
@@ -930,7 +938,15 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
     try:
         print(f"🤖 运行AI分析: {request.date}, 设备: {request.device_sn}, 强制刷新: {request.force_refresh}")
 
-        from improved_agent import get_cached_analysis, run_improved_agent
+        try:
+            from improved_agent import get_cached_analysis, run_improved_agent
+        except ImportError:
+            print("⚠️ 无法导入 improved_agent，相关功能将不可用")
+            return {
+                "success": False,
+                "error": "AI分析服务不可用",
+                "message": "无法导入必要的AI分析库，请联系管理员"
+            }
         
         # 构建查询字符串
         query = f"[设备序列号: {request.device_sn}] 请分析 {request.date} 的睡眠数据"
@@ -990,6 +1006,13 @@ async def ai_analysis(request: SleepAnalysisWithTimeRequest):
                 }
         
         # 生成AI分析并自动保存到数据库
+        if run_improved_agent is None:
+            return {
+                "success": False,
+                "error": "智能体功能不可用",
+                "message": "智能体相关依赖未正确安装"
+            }
+            
         result = run_improved_agent(
             request.date, 
             thread_id=f"ai_analysis_{request.date}", 
@@ -1337,12 +1360,52 @@ async def health_check():
 async def get_weekly_or_monthly_data(request: WeeklyOrMonthlyDataRequest):
     """获取周/月数据"""
     try:
-        print(f"📊 获取{request.data_type}数据: 设备={request.device_sn}")
+        print(f"📊 获取{request.data_type}数据: 设备={request.device_sn}, 时间={request.datetime}")
+        
+        # 计算日期范围
+        from datetime import datetime, timedelta
+        
+        # 使用请求中提供的时间或当前时间
+        if request.datetime:
+            try:
+                # 尝试解析包含时分秒的格式
+                base_date = datetime.strptime(request.datetime, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                try:
+                    # 尝试解析仅包含日期的格式
+                    base_date = datetime.strptime(request.datetime, '%Y-%m-%d')
+                except ValueError:
+                    print(f"❌ 无效的时间格式: {request.datetime}，使用当前时间")
+                    base_date = datetime.now()
+        else:
+            base_date = datetime.now()
+        
+        if request.data_type == 'week':
+            # 自然周：周一到周日
+            # 计算本周一
+            days_since_monday = base_date.weekday()
+            start_date = (base_date - timedelta(days=days_since_monday)).strftime('%Y-%m-%d')
+            # 计算本周日
+            end_date = (base_date + timedelta(days=6 - days_since_monday)).strftime('%Y-%m-%d')
+        else:  # month
+            # 自然月：月初到月末
+            # 计算本月初
+            start_date = base_date.strftime('%Y-%m-01')
+            # 计算下月初，然后减一天得到本月末
+            if base_date.month == 12:
+                next_month = base_date.replace(year=base_date.year + 1, month=1, day=1)
+            else:
+                next_month = base_date.replace(month=base_date.month + 1, day=1)
+            end_date = (next_month - timedelta(days=1)).strftime('%Y-%m-%d')
+        
+        print(f"日期范围: {start_date} 至 {end_date}")
         
         # 调用趋势分析工具
         result = analyze_trend_from_database(
             data_type=request.data_type,
-            device_sn=request.device_sn
+            device_sn=request.device_sn,
+            start_date=start_date,
+            end_date=end_date
         )
         
         # 解析结果
@@ -1703,20 +1766,38 @@ def generate_comprehensive_report(sleep_data: dict, physio_data: dict, date: str
 async def weekly_or_monthly_analysis(request: SleepSummaryRequest):
     """周度/月度分析（睡眠、心率、呼吸频率、呼吸暂停）"""
     try:
-        print(f"📋 周度/月度分析: {request.summary_type}, 设备: {request.device_sn}")
+        print(f"📋 周度/月度分析: {request.summary_type}, 设备: {request.device_sn}, 时间: {request.datetime}")
         
         # 计算日期范围
         from datetime import datetime, timedelta
-        today = datetime.now()
+        
+        # 使用请求中提供的时间或当前时间
+        if request.datetime:
+            try:
+                base_date = datetime.strptime(request.datetime, '%Y-%m-%d %H:%M:%S')
+            except ValueError:
+                print(f"❌ 无效的时间格式: {request.datetime}，使用当前时间")
+                base_date = datetime.now()
+        else:
+            base_date = datetime.now()
         
         if request.summary_type == 'week':
-            # 过去7天
-            start_date = (today - timedelta(days=6)).strftime('%Y-%m-%d')
-            end_date = today.strftime('%Y-%m-%d')
+            # 自然周：周一到周日
+            # 计算本周一
+            days_since_monday = base_date.weekday()
+            start_date = (base_date - timedelta(days=days_since_monday)).strftime('%Y-%m-%d')
+            # 计算本周日
+            end_date = (base_date + timedelta(days=6 - days_since_monday)).strftime('%Y-%m-%d')
         else:  # month
-            # 过去30天
-            start_date = (today - timedelta(days=29)).strftime('%Y-%m-%d')
-            end_date = today.strftime('%Y-%m-%d')
+            # 自然月：月初到月末
+            # 计算本月初
+            start_date = base_date.strftime('%Y-%m-01')
+            # 计算下月初，然后减一天得到本月末
+            if base_date.month == 12:
+                next_month = base_date.replace(year=base_date.year + 1, month=1, day=1)
+            else:
+                next_month = base_date.replace(month=base_date.month + 1, day=1)
+            end_date = (next_month - timedelta(days=1)).strftime('%Y-%m-%d')
         
         print(f"日期范围: {start_date} 至 {end_date}")
         
@@ -1877,7 +1958,11 @@ def run_scheduler():
             current_date = datetime.now().strftime('%Y-%m-%d')
             
             # 首先检查是否已有缓存（用户可能已在10点前触发过）
-            from improved_agent import get_cached_analysis, run_improved_agent
+            try:
+                from improved_agent import get_cached_analysis, run_improved_agent
+            except ImportError:
+                print("⚠️ 无法导入 improved_agent，跳过定时AI分析")
+                return
             query = f"请分析 {current_date} 的睡眠数据"
             cached_result = get_cached_analysis(query, current_date)
             
@@ -1959,7 +2044,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="启动修复版智能体API服务器")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="服务器主机地址")
-    parser.add_argument("-p", "--port", type=int, default=9001, help="服务器端口")
+    parser.add_argument("-p", "--port", type=int, default=9002, help="服务器端口")
     parser.add_argument("--reload", action="store_true", help="启用热重载模式")
     
     args = parser.parse_args()

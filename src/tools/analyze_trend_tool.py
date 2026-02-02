@@ -32,7 +32,7 @@ def analyze_trend_and_pattern_internal(file_path: str = None, table_name: str = 
     }
 
 
-def analyze_trend_from_database(data_type: str = "week", device_sn: str = None) -> str:
+def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, start_date: str = None, end_date: str = None) -> str:
     """
     从数据库分析周/月数据趋势
     
@@ -41,6 +41,8 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None) 
     参数:
         data_type: 数据类型，"week"表示周数据，"month"表示月数据
         device_sn: 设备序列号，可选
+        start_date: 开始日期，格式如 "2024-12-20"，可选
+        end_date: 结束日期，格式如 "2024-12-20"，可选
     
     返回:
         JSON格式的分析结果，包含：
@@ -53,14 +55,16 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None) 
         import json
         from src.db.database import DatabaseManager
         
-        # 根据data_type计算日期范围
-        end_date = datetime.now().strftime('%Y-%m-%d')
-        if data_type == "week":
-            # 最近7天
-            start_date = (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
-        else:  # month
-            # 最近30天
-            start_date = (datetime.now() - timedelta(days=29)).strftime('%Y-%m-%d')
+        # 如果没有提供开始和结束日期，则根据data_type计算
+        if not start_date or not end_date:
+            # 根据data_type计算日期范围
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            if data_type == "week":
+                # 最近7天
+                start_date = (datetime.now() - timedelta(days=6)).strftime('%Y-%m-%d')
+            else:  # month
+                # 最近30天
+                start_date = (datetime.now() - timedelta(days=29)).strftime('%Y-%m-%d')
         
         print(f"📅 分析日期范围: {start_date} 到 {end_date}")
         print(f"📊 数据类型: {data_type}")

@@ -10,7 +10,7 @@ import json
 import logging
 from typing import Dict, List, Tuple, Optional
 import warnings
-from langchain.tools import tool, ToolRuntime
+from langchain_community.tools import tool
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -1773,7 +1773,7 @@ def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, tab
 
 
 @tool
-def analyze_sleep_by_date(date: str, runtime: ToolRuntime = None, table_name: str = "vital_signs") -> str:
+def analyze_sleep_by_date(date: str, runtime: object = None, table_name: str = "vital_signs") -> str:
     """
     根据指定日期分析睡眠数据
     
