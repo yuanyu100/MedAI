@@ -1,7 +1,7 @@
 from typing import Any, Optional, Dict, Union
 import json
 from datetime import datetime, time
-from langchain.tools import tool, ToolRuntime
+from langchain.tools import tool
 
 
 class ApiResponse:

@@ -171,47 +171,68 @@ class SleepStageAnalyzer:
         Returns:
             包含睡眠阶段的数据分析
         """
+        print(f"\n=== 调试信息: 开始计算睡眠阶段 ===")
+        print(f"基线心率: {baseline_heart_rate}")
+        print(f"数据总行数: {len(data)}")
+        
+        # 对生理指标进行移动平均平滑
+        print("\n=== 调试信息: 开始数据平滑 ===")
+        data['heart_rate_smoothed'] = data['heart_rate'].rolling(window=3, center=True, min_periods=1).mean()
+        data['respiratory_rate_smoothed'] = data['respiratory_rate'].rolling(window=3, center=True, min_periods=1).mean()
+        data['body_moves_ratio_smoothed'] = data['body_moves_ratio'].rolling(window=3, center=True, min_periods=1).mean()
+        print(f"平滑前心率范围: {data['heart_rate'].min():.2f} - {data['heart_rate'].max():.2f}")
+        print(f"平滑后心率范围: {data['heart_rate_smoothed'].min():.2f} - {data['heart_rate_smoothed'].max():.2f}")
+        
         # 清醒判定
+        print("\n=== 调试信息: 开始清醒判定 ===")
         data['is_awake'] = (
             (data['is_morning'] & (
-                (data['heart_rate'] >= baseline_heart_rate * 0.85) |
-                (data['body_moves_ratio'] > 1.5) |
+                (data['heart_rate_smoothed'] >= baseline_heart_rate * 0.90) |  # 从0.85调整到0.90
+                (data['body_moves_ratio_smoothed'] > 2) |  # 从1.5调整到2
                 (data['amp_indicator'])
             )) |
             (data['is_afternoon'] & (
-                (data['heart_rate'] >= baseline_heart_rate * 0.88) |
-                (data['body_moves_ratio'] > 2) |
+                (data['heart_rate_smoothed'] >= baseline_heart_rate * 0.92) |  # 从0.88调整到0.92
+                (data['body_moves_ratio_smoothed'] > 3) |  # 从2调整到3
                 (data['amp_indicator'])
             )) |
             (data['is_evening'] & (
-                (data['heart_rate'] >= baseline_heart_rate * 0.90) |
-                (data['body_moves_ratio'] > 2.5) |
+                (data['heart_rate_smoothed'] >= baseline_heart_rate * 0.95) |  # 从0.90调整到0.95
+                (data['body_moves_ratio_smoothed'] > 3.5) |  # 从2.5调整到3.5
                 (data['amp_indicator'])
             )) |
             ((~data['is_daytime']) & (
-                (data['heart_rate'] >= baseline_heart_rate * 1.10) |
-                ((data['heart_rate'] >= baseline_heart_rate * 0.95) &
-                 (data['body_moves_ratio'] > 5)) |
-                (data['amp_indicator'])
+                (data['heart_rate_smoothed'] >= baseline_heart_rate * 1.15) |  # 从1.10调整到1.15，更宽松
+                ((data['heart_rate_smoothed'] >= baseline_heart_rate * 1.00) &  # 从0.95调整到1.00
+                 (data['body_moves_ratio_smoothed'] > 8)) |  # 从5调整到8，更宽松
+                (data['amp_indicator'] & (data['body_moves_ratio_smoothed'] > 10))  # 增加体动阈值条件
             ))
         )
         
+        print(f"清醒状态占比: {data['is_awake'].sum()/len(data)*100:.2f}%")
+        
         # 深睡判定
-        overall_resp_mean = data['respiratory_rate'].mean()
+        print("\n=== 调试信息: 开始深睡判定 ===")
+        overall_resp_mean = data['respiratory_rate_smoothed'].mean()
         data['is_deep'] = (
-            (data['heart_rate'] <= baseline_heart_rate * 0.90) &  # 从0.85调整到0.90，更宽松
-            (data['respiratory_rate'] <= overall_resp_mean * 0.95) &  # 从0.9调整到0.95，更宽松
+            (data['heart_rate_smoothed'] <= baseline_heart_rate * 0.90) &  # 使用平滑后的数据
+            (data['respiratory_rate_smoothed'] <= overall_resp_mean * 0.95) &  # 使用平滑后的数据
             (data['respiratory_stability'] < 8) &  # 从5调整到8，更宽松
-            (data['body_moves_ratio'] <= 5) &  # 从3调整到5，更宽松
+            (data['body_moves_ratio_smoothed'] <= 5) &  # 使用平滑后的数据，从3调整到5，更宽松
             (data['freq_stability']) &
             (~data['is_awake'])
         )
+        print(f"深睡状态占比: {data['is_deep'].sum()/len(data)*100:.2f}%")
         
         # 计算深睡基线
+        print("\n=== 调试信息: 计算深睡基线 ===")
         deep_sleep_data = data[data['is_deep']]
-        actual_deep_hr = deep_sleep_data['heart_rate'].mean() if not deep_sleep_data.empty else baseline_heart_rate * 0.75
+        actual_deep_hr = deep_sleep_data['heart_rate_smoothed'].mean() if not deep_sleep_data.empty else baseline_heart_rate * 0.75
+        print(f"深睡基线心率: {actual_deep_hr:.2f}")
+        print(f"深睡数据点数: {len(deep_sleep_data)}")
         
         # REM判定
+        print("\n=== 调试信息: 开始REM判定 ===")
         REM_HR_MULTIPLIER_LOW = 1.10
         REM_HR_MULTIPLIER_HIGH = 1.40
         REM_RESP_STABILITY_LOW = 10
@@ -220,24 +241,33 @@ class SleepStageAnalyzer:
         data['is_rem'] = (
             (~data['is_awake']) &
             (~data['is_deep']) &
-            (data['heart_rate'] >= actual_deep_hr * REM_HR_MULTIPLIER_LOW) &
-            (data['heart_rate'] <= actual_deep_hr * REM_HR_MULTIPLIER_HIGH) &
+            (data['heart_rate_smoothed'] >= actual_deep_hr * REM_HR_MULTIPLIER_LOW) &  # 使用平滑后的数据
+            (data['heart_rate_smoothed'] <= actual_deep_hr * REM_HR_MULTIPLIER_HIGH) &  # 使用平滑后的数据
             (data['respiratory_stability'] > REM_RESP_STABILITY_LOW) &
-            (data['body_moves_ratio'] <= REM_BODY_MOVES_MAX) &
-            (data['respiratory_rate'] >= 8) &
-            (data['respiratory_rate'] <= 20) &
+            (data['body_moves_ratio_smoothed'] <= REM_BODY_MOVES_MAX) &  # 使用平滑后的数据
+            (data['respiratory_rate_smoothed'] >= 8) &  # 使用平滑后的数据
+            (data['respiratory_rate_smoothed'] <= 20) &  # 使用平滑后的数据
             (data['amp_diff_indicator']) &
             (~data['freq_stability'])
         )
+        print(f"REM状态占比: {data['is_rem'].sum()/len(data)*100:.2f}%")
         
         # 浅睡判定
+        print("\n=== 调试信息: 开始浅睡判定 ===")
         data['is_light'] = (
             (~data['is_awake']) &
             (~data['is_deep']) &
             (~data['is_rem']) &
-            (data['body_moves_ratio'] <= 10) &
-            (data['heart_rate'] <= baseline_heart_rate * 0.95)
+            (data['body_moves_ratio_smoothed'] <= 10) &  # 使用平滑后的数据
+            (data['heart_rate_smoothed'] <= baseline_heart_rate * 0.95)  # 使用平滑后的数据
         )
+        print(f"浅睡状态占比: {data['is_light'].sum()/len(data)*100:.2f}%")
+        
+        # 验证各状态占比总和
+        total_ratio = (data['is_awake'].sum() + data['is_deep'].sum() + data['is_rem'].sum() + data['is_light'].sum()) / len(data) * 100
+        print(f"\n=== 调试信息: 状态占比汇总 ===")
+        print(f"总占比: {total_ratio:.2f}%")
+        print(f"=== 调试信息: 睡眠阶段计算完成 ===")
         
         return data
     
@@ -252,17 +282,28 @@ class SleepStageAnalyzer:
         Returns:
             包含连续验证的睡眠数据
         """
-        # 连续验证
-        CONTINUOUS_MINUTES = 2
+        print("\n=== 调试信息: 开始连续验证 ===")
+        # 增加连续验证窗口
+        CONTINUOUS_MINUTES = 3  # 从2调整到3
+        print(f"连续验证窗口大小: {CONTINUOUS_MINUTES}分钟")
+        
         for stage in ['is_awake', 'is_deep', 'is_rem', 'is_light']:
             data[f'{stage}_continuous'] = (
                 data[stage].rolling(window=CONTINUOUS_MINUTES, min_periods=1).sum() == CONTINUOUS_MINUTES
             )
         
+        # 统计连续验证后的各状态占比
+        print("\n=== 调试信息: 连续验证后的状态占比 ===")
+        print(f"连续清醒状态占比: {data['is_awake_continuous'].sum()/len(data)*100:.2f}%")
+        print(f"连续深睡状态占比: {data['is_deep_continuous'].sum()/len(data)*100:.2f}%")
+        print(f"连续REM状态占比: {data['is_rem_continuous'].sum()/len(data)*100:.2f}%")
+        print(f"连续浅睡状态占比: {data['is_light_continuous'].sum()/len(data)*100:.2f}%")
+        
         # 初始化阶段值和标签
         data['stage_value'] = SleepStageAnalyzer.STAGE_LIGHT  # 默认为浅睡
         data['stage_label'] = SleepStageAnalyzer.STAGE_LABELS[SleepStageAnalyzer.STAGE_LIGHT]
         
+        print("=== 调试信息: 连续验证完成 ===")
         return data
     
     @classmethod
@@ -277,26 +318,39 @@ class SleepStageAnalyzer:
         Returns:
             包含睡眠阶段判定的DataFrame
         """
+        print("\n=== 调试信息: 开始优化睡眠阶段判定 ===")
+        print(f"输入数据行数: {len(sleep_data)}")
+        print(f"输入基线心率: {baseline_heart_rate}")
+        
         try:
             # 1. 准备数据
+            print("\n1. 准备数据")
             processed_data = cls._prepare_sleep_data(sleep_data)
+            print(f"准备后数据行数: {len(processed_data)}")
             
             # 2. 计算时间特征
+            print("\n2. 计算时间特征")
             processed_data = cls._calculate_time_based_features(processed_data)
             
             # 3. 计算生理特征
+            print("\n3. 计算生理特征")
             processed_data = cls._calculate_physiological_features(processed_data)
             
             # 4. 计算睡眠阶段
+            print("\n4. 计算睡眠阶段")
             processed_data = cls._calculate_sleep_stages(processed_data, baseline_heart_rate)
             
             # 5. 验证连续阶段
+            print("\n5. 验证连续阶段")
             processed_data = cls._validate_continuous_stages(processed_data)
             
+            print("\n=== 调试信息: 优化睡眠阶段判定完成 ===")
             return processed_data
             
         except Exception as e:
             logger.error(f"计算睡眠阶段时出错: {str(e)}")
+            print(f"\n=== 调试信息: 计算睡眠阶段时出错 ===")
+            print(f"错误信息: {str(e)}")
             # 返回原始数据，添加错误标记
             error_data = sleep_data.copy()
             error_data['stage_value'] = 0
@@ -304,7 +358,7 @@ class SleepStageAnalyzer:
             return error_data
     
     @staticmethod
-    def smooth_sleep_stages(stages_sequence: List[Dict], min_duration_threshold: int = 3) -> List[Dict]:
+    def smooth_sleep_stages(stages_sequence: List[Dict], min_duration_threshold: int = 5) -> List[Dict]:  # 从3调整到5
         """
         平滑睡眠阶段序列，减少碎片化
         
@@ -315,11 +369,17 @@ class SleepStageAnalyzer:
         Returns:
             平滑后的睡眠阶段序列
         """
+        print("\n=== 调试信息: 开始平滑睡眠阶段 ===")
+        print(f"输入阶段序列长度: {len(stages_sequence)}")
+        print(f"最小持续时间阈值: {min_duration_threshold}分钟")
+        
         if not stages_sequence:
+            print("输入阶段序列为空，直接返回")
             return stages_sequence
         
         try:
             # 合并相邻的相同阶段
+            print("\n1. 合并相邻的相同阶段")
             merged_same_stages = []
             i = 0
             while i < len(stages_sequence):
@@ -333,10 +393,14 @@ class SleepStageAnalyzer:
                 merged_same_stages.append(current)
                 i = j
             
+            print(f"合并后阶段序列长度: {len(merged_same_stages)}")
+            
             # 移除或合并短持续时间的阶段
             if not merged_same_stages:
+                print("合并后阶段序列为空，直接返回")
                 return merged_same_stages
             
+            print("\n2. 移除或合并短持续时间的阶段")
             result = [merged_same_stages[0]]
             
             i = 1
@@ -345,18 +409,257 @@ class SleepStageAnalyzer:
                 
                 if current['time_interval'] < min_duration_threshold:
                     # 当前阶段太短，合并到前一个阶段
+                    print(f"合并短阶段: {current['stage_label']} ({current['time_interval']:.1f}分钟) 到前一个阶段")
                     result[-1]['time_interval'] += current['time_interval']
                 else:
                     # 当前阶段足够长，添加到结果中
+                    print(f"添加阶段: {current['stage_label']} ({current['time_interval']:.1f}分钟)")
                     result.append(current)
                 
                 i += 1
+            
+            print(f"\n平滑后阶段序列长度: {len(result)}")
+            print("=== 调试信息: 平滑睡眠阶段完成 ===")
             
             return result
             
         except Exception as e:
             logger.error(f"平滑睡眠阶段时出错: {str(e)}")
+            print(f"平滑睡眠阶段时出错: {str(e)}")
             return stages_sequence
+    
+    @staticmethod
+    def _calculate_trusleep_features(data: pd.DataFrame) -> pd.DataFrame:
+        """
+        计算TruSleep算法所需的特征
+        
+        Args:
+            data: 睡眠数据
+            
+        Returns:
+            包含TruSleep特征的数据
+        """
+        print("\n=== 调试信息: 开始计算TruSleep特征 ===")
+        
+        # 复制数据避免修改原数据
+        processed_data = data.copy()
+        
+        # 1. 基础生理指标平滑
+        print("\n1. 基础生理指标平滑")
+        processed_data['heart_rate_smoothed'] = processed_data['heart_rate'].rolling(window=5, center=True, min_periods=1).mean()
+        processed_data['respiratory_rate_smoothed'] = processed_data['respiratory_rate'].rolling(window=5, center=True, min_periods=1).mean()
+        processed_data['body_moves_ratio_smoothed'] = processed_data['body_moves_ratio'].rolling(window=5, center=True, min_periods=1).mean()
+        
+        # 2. 呼吸和心跳幅度处理
+        print("\n2. 呼吸和心跳幅度处理")
+        # 转换呼吸幅度均值为数值
+        if 'breath_amp_average' in processed_data.columns:
+            processed_data['breath_amp_average'] = pd.to_numeric(processed_data['breath_amp_average'], errors='coerce')
+            processed_data['breath_amp_smoothed'] = processed_data['breath_amp_average'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            processed_data['breath_amp_smoothed'] = 0
+        
+        # 转换心跳幅度均值为数值
+        if 'heart_amp_average' in processed_data.columns:
+            processed_data['heart_amp_average'] = pd.to_numeric(processed_data['heart_amp_average'], errors='coerce')
+            processed_data['heart_amp_smoothed'] = processed_data['heart_amp_average'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            processed_data['heart_amp_smoothed'] = 0
+        
+        # 3. 频率标准差处理
+        print("\n3. 频率标准差处理")
+        # 转换呼吸频率标准差为数值
+        if 'breath_freq_std' in processed_data.columns:
+            processed_data['breath_freq_std'] = pd.to_numeric(processed_data['breath_freq_std'], errors='coerce')
+            processed_data['breath_freq_std_smoothed'] = processed_data['breath_freq_std'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            processed_data['breath_freq_std_smoothed'] = 0
+        
+        # 转换心跳频率标准差为数值
+        if 'heart_freq_std' in processed_data.columns:
+            processed_data['heart_freq_std'] = pd.to_numeric(processed_data['heart_freq_std'], errors='coerce')
+            processed_data['heart_freq_std_smoothed'] = processed_data['heart_freq_std'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            processed_data['heart_freq_std_smoothed'] = 0
+        
+        # 4. 幅度差值处理
+        print("\n4. 幅度差值处理")
+        # 转换呼吸幅度差值为数值
+        if 'breath_amp_diff' in processed_data.columns:
+            processed_data['breath_amp_diff'] = pd.to_numeric(processed_data['breath_amp_diff'], errors='coerce')
+            processed_data['breath_amp_diff_smoothed'] = processed_data['breath_amp_diff'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            processed_data['breath_amp_diff_smoothed'] = 0
+        
+        # 转换心跳幅度差值为数值
+        if 'heart_amp_diff' in processed_data.columns:
+            processed_data['heart_amp_diff'] = pd.to_numeric(processed_data['heart_amp_diff'], errors='coerce')
+            processed_data['heart_amp_diff_smoothed'] = processed_data['heart_amp_diff'].rolling(window=5, center=True, min_periods=1).mean()
+        else:
+            processed_data['heart_amp_diff_smoothed'] = 0
+        
+        # 5. 体动处理
+        print("\n5. 体动处理")
+        if 'has_move' in processed_data.columns:
+            processed_data['has_move'] = pd.to_numeric(processed_data['has_move'], errors='coerce')
+            # 计算体动频率
+            processed_data['move_freq'] = processed_data['has_move'].rolling(window=10, center=True, min_periods=1).sum()
+        else:
+            processed_data['move_freq'] = processed_data['body_moves_ratio_smoothed'] / 10
+        
+        # 6. 心率变异性指标
+        print("\n6. 心率变异性指标")
+        # 计算心率滚动标准差作为心率变异性的近似
+        processed_data['hr_variability'] = processed_data['heart_rate_smoothed'].rolling(window=10, center=True, min_periods=3).std()
+        
+        # 7. 呼吸模式指标
+        print("\n7. 呼吸模式指标")
+        # 计算呼吸频率滚动标准差
+        processed_data['resp_variability'] = processed_data['respiratory_rate_smoothed'].rolling(window=10, center=True, min_periods=3).std()
+        
+        print("=== 调试信息: TruSleep特征计算完成 ===")
+        return processed_data
+    
+    @staticmethod
+    def calculate_trusleep_stages(data: pd.DataFrame, baseline_heart_rate: float) -> pd.DataFrame:
+        """
+        实现TruSleep算法进行睡眠分期
+        
+        Args:
+            data: 睡眠数据
+            baseline_heart_rate: 基线心率
+            
+        Returns:
+            包含睡眠阶段判定的DataFrame
+        """
+        print("\n=== 调试信息: 开始TruSleep睡眠分期 ===")
+        print(f"基线心率: {baseline_heart_rate}")
+        print(f"数据总行数: {len(data)}")
+        
+        try:
+            # 1. 计算TruSleep特征
+            print("\n1. 计算TruSleep特征")
+            processed_data = SleepStageAnalyzer._calculate_trusleep_features(data)
+            
+            # 2. 时间特征
+            print("\n2. 计算时间特征")
+            processed_data['hour'] = processed_data['upload_time'].dt.hour
+            processed_data['is_morning'] = (processed_data['hour'] >= 6) & (processed_data['hour'] < 12)
+            processed_data['is_afternoon'] = (processed_data['hour'] >= 12) & (processed_data['hour'] < 18)
+            processed_data['is_evening'] = (processed_data['hour'] >= 18) & (processed_data['hour'] < 22)
+            processed_data['is_night'] = (processed_data['hour'] >= 22) | (processed_data['hour'] < 6)
+            
+            # 3. 睡眠阶段判定
+            print("\n3. 开始睡眠阶段判定")
+            
+            # 3.1 清醒期判定
+            print("\n3.1 清醒期判定")
+            processed_data['is_awake'] = (
+                # 夜间清醒判定
+                (processed_data['is_night'] & (
+                    (processed_data['heart_rate_smoothed'] >= baseline_heart_rate * 1.15) |
+                    (processed_data['move_freq'] > 3) |
+                    (processed_data['body_moves_ratio_smoothed'] > 15) |
+                    (processed_data['hr_variability'] > 15)
+                )) |
+                # 白天清醒判定
+                ((~processed_data['is_night']) & (
+                    (processed_data['heart_rate_smoothed'] >= baseline_heart_rate * 0.95) |
+                    (processed_data['move_freq'] > 1) |
+                    (processed_data['body_moves_ratio_smoothed'] > 10)
+                ))
+            )
+            print(f"清醒状态占比: {processed_data['is_awake'].sum()/len(processed_data)*100:.2f}%")
+            
+            # 3.2 深睡期判定
+            print("\n3.2 深睡期判定")
+            # 计算呼吸和心率的稳定性阈值
+            breath_stability_thresh = processed_data['resp_variability'].quantile(0.3) if len(processed_data) > 0 else 5
+            hr_stability_thresh = processed_data['hr_variability'].quantile(0.3) if len(processed_data) > 0 else 5
+            
+            processed_data['is_deep'] = (
+                (~processed_data['is_awake']) &
+                (processed_data['heart_rate_smoothed'] <= baseline_heart_rate * 0.90) &
+                (processed_data['heart_rate_smoothed'] >= baseline_heart_rate * 0.60) &
+                (processed_data['respiratory_rate_smoothed'] <= 18) &
+                (processed_data['respiratory_rate_smoothed'] >= 10) &
+                (processed_data['body_moves_ratio_smoothed'] <= 5) &
+                (processed_data['move_freq'] <= 0.5) &
+                (processed_data['hr_variability'] < hr_stability_thresh) &
+                (processed_data['resp_variability'] < breath_stability_thresh)
+            )
+            print(f"深睡状态占比: {processed_data['is_deep'].sum()/len(processed_data)*100:.2f}%")
+            
+            # 3.3 计算深睡基线
+            print("\n3.3 计算深睡基线")
+            deep_sleep_data = processed_data[processed_data['is_deep']]
+            actual_deep_hr = deep_sleep_data['heart_rate_smoothed'].mean() if not deep_sleep_data.empty else baseline_heart_rate * 0.75
+            print(f"深睡基线心率: {actual_deep_hr:.2f}")
+            print(f"基线心率: {baseline_heart_rate:.2f}")
+            
+            # 3.4 REM期判定
+            print("\n3.4 REM期判定")
+            # 调整REM期判定条件，使其更加宽松
+            processed_data['is_rem'] = (
+                (~processed_data['is_awake']) &
+                (~processed_data['is_deep']) &
+                (processed_data['heart_rate_smoothed'] >= actual_deep_hr * 1.05) &  # 从1.10调整为1.05
+                (processed_data['heart_rate_smoothed'] <= actual_deep_hr * 1.45) &  # 从1.40调整为1.45
+                (processed_data['respiratory_rate_smoothed'] >= 11) &  # 从12调整为11
+                (processed_data['respiratory_rate_smoothed'] <= 21) &  # 从20调整为21
+                (processed_data['body_moves_ratio_smoothed'] <= 10) &  # 从8调整为10
+                (processed_data['move_freq'] <= 1.5) &  # 从1调整为1.5
+                (processed_data['hr_variability'] > hr_stability_thresh * 0.8) &  # 从1.0调整为0.8
+                (processed_data['resp_variability'] > breath_stability_thresh * 0.8)  # 从1.0调整为0.8
+            )
+            print(f"REM状态占比: {processed_data['is_rem'].sum()/len(processed_data)*100:.2f}%")
+            
+            # 3.5 浅睡期判定
+            print("\n3.5 浅睡期判定")
+            processed_data['is_light'] = (
+                (~processed_data['is_awake']) &
+                (~processed_data['is_deep']) &
+                (~processed_data['is_rem'])
+            )
+            print(f"浅睡状态占比: {processed_data['is_light'].sum()/len(processed_data)*100:.2f}%")
+            
+            # 4. 连续验证
+            print("\n4. 连续验证")
+            CONTINUOUS_MINUTES = 4  # TruSleep使用更长的连续验证窗口
+            for stage in ['is_awake', 'is_deep', 'is_rem', 'is_light']:
+                processed_data[f'{stage}_continuous'] = (
+                    processed_data[stage].rolling(window=CONTINUOUS_MINUTES, min_periods=1).sum() == CONTINUOUS_MINUTES
+                )
+            
+            # 5. 初始化阶段值和标签
+            print("\n5. 初始化阶段值和标签")
+            processed_data['stage_value'] = SleepStageAnalyzer.STAGE_LIGHT  # 默认为浅睡
+            processed_data['stage_label'] = SleepStageAnalyzer.STAGE_LABELS[SleepStageAnalyzer.STAGE_LIGHT]
+            
+            # 按优先级分配阶段
+            awake_mask = processed_data['is_awake_continuous']
+            processed_data.loc[awake_mask, ['stage_value', 'stage_label']] = [4, "清醒"]
+            
+            deep_mask = (~awake_mask) & processed_data['is_deep_continuous']
+            processed_data.loc[deep_mask, ['stage_value', 'stage_label']] = [1, "深睡"]
+            
+            rem_mask = (~awake_mask) & (~deep_mask) & processed_data['is_rem_continuous']
+            processed_data.loc[rem_mask, ['stage_value', 'stage_label']] = [3, "眼动"]
+            
+            light_mask = (~awake_mask) & (~deep_mask) & (~rem_mask)
+            processed_data.loc[light_mask, ['stage_value', 'stage_label']] = [2, "浅睡"]
+            
+            print("=== 调试信息: TruSleep睡眠分期完成 ===")
+            return processed_data
+            
+        except Exception as e:
+            logger.error(f"TruSleep睡眠分期时出错: {str(e)}")
+            print(f"TruSleep睡眠分期时出错: {str(e)}")
+            # 返回原始数据，添加错误标记
+            error_data = data.copy()
+            error_data['stage_value'] = 0
+            error_data['stage_label'] = "错误"
+            return error_data
 
 
 class SleepTimeAnalyzer:
@@ -927,19 +1230,47 @@ class SleepMetricsCalculator:
         else:
             sleep_period_data['arrhythmia_avg_5'] = 100
         
-        # 找到第一个稳定睡眠位置
+        # 计算呼吸率标准差
+        if 'respiratory_rate' in sleep_period_data.columns:
+            sleep_period_data['rr_std_5'] = sleep_period_data['respiratory_rate'].rolling(
+                window=SleepMetricsCalculator.STABLE_RECORDS_NEEDED, 
+                center=True, 
+                min_periods=1
+            ).std()
+        else:
+            sleep_period_data['rr_std_5'] = 100
+        
+        # 计算体动比率均值
+        if 'body_moves_ratio' in sleep_period_data.columns:
+            sleep_period_data['body_moves_avg_5'] = sleep_period_data['body_moves_ratio'].rolling(
+                window=SleepMetricsCalculator.STABLE_RECORDS_NEEDED, 
+                center=True, 
+                min_periods=1
+            ).mean()
+        else:
+            sleep_period_data['body_moves_avg_5'] = 100
+        
+        # 找到第一个稳定睡眠位置，考虑更多生理指标
         stable_mask = (
             (sleep_period_data['hr_std_5'] <= SleepMetricsCalculator.STABLE_HR_STD_THRESHOLD) & 
-            (sleep_period_data['arrhythmia_avg_5'] <= SleepMetricsCalculator.STABLE_ARRHYTHMIA_THRESHOLD)
+            (sleep_period_data['arrhythmia_avg_5'] <= SleepMetricsCalculator.STABLE_ARRHYTHMIA_THRESHOLD) &
+            (sleep_period_data.get('rr_std_5', 0) <= 5) &  # 呼吸率标准差 <= 5
+            (sleep_period_data.get('body_moves_avg_5', 0) <= 15)  # 体动比率 <= 15
         )
         stable_indices = sleep_period_data[stable_mask].index
         
         if stable_indices.empty:
-            return SleepMetricsCalculator.DEFAULT_SLEEP_PREP_TIME
+            # 如果没有找到稳定点，设置最大睡眠准备时间为120分钟
+            return min(SleepMetricsCalculator.DEFAULT_SLEEP_PREP_TIME,120)
         
         first_stable_idx = stable_indices[0]
         stable_sleep_start = sleep_period_data.loc[first_stable_idx, 'upload_time']
         sleep_prep_time = (stable_sleep_start - bedtime).total_seconds() / 60
+        
+        # 设置最大睡眠准备时间为60分钟，避免出现极端情况
+        max_sleep_prep_time = 60
+        sleep_prep_time = min(sleep_prep_time, max_sleep_prep_time)
+        
         return max(sleep_prep_time, SleepMetricsCalculator.MIN_SLEEP_PREP_TIME)
     
     @staticmethod
@@ -976,12 +1307,13 @@ class SleepMetricsCalculator:
         }
     
     @classmethod
-    def _calculate_sleep_stages(cls, sleep_period_data: pd.DataFrame) -> Dict:
+    def _calculate_sleep_stages(cls, sleep_period_data: pd.DataFrame, use_trusleep: bool = True) -> Dict:
         """
         计算睡眠阶段
         
         Args:
             sleep_period_data: 睡眠时段数据
+            use_trusleep: 是否使用 TruSleep 算法
             
         Returns:
             睡眠阶段数据
@@ -1025,9 +1357,16 @@ class SleepMetricsCalculator:
             baseline_heart_rate = awake_data['heart_rate'].mean() if not awake_data.empty else 70
             
             # 计算睡眠阶段
-            sleep_data = SleepStageAnalyzer.calculate_optimized_sleep_stages(
-                sleep_data, baseline_heart_rate
-            )
+            if use_trusleep:
+                print("\n=== 调试信息: 使用 TruSleep 算法进行睡眠分期 ===")
+                sleep_data = SleepStageAnalyzer.calculate_trusleep_stages(
+                    sleep_data, baseline_heart_rate
+                )
+            else:
+                print("\n=== 调试信息: 使用传统算法进行睡眠分期 ===")
+                sleep_data = SleepStageAnalyzer.calculate_optimized_sleep_stages(
+                    sleep_data, baseline_heart_rate
+                )
             
             # 按优先级分配阶段
             awake_mask = sleep_data['is_awake_continuous']
@@ -1307,7 +1646,9 @@ class SleepMetricsCalculator:
             # 1. 准备数据
             numeric_columns = [
                 'heart_rate', 'respiratory_rate', 'avg_heartbeat_interval', 
-                'rms_heartbeat_interval', 'std_heartbeat_interval', 'arrhythmia_ratio', 'body_moves_ratio'
+                'rms_heartbeat_interval', 'std_heartbeat_interval', 'arrhythmia_ratio', 'body_moves_ratio',
+                'has_move', 'breath_amp_average', 'heart_amp_average', 'breath_freq_std',
+                'heart_freq_std', 'breath_amp_diff', 'heart_amp_diff'
             ]
             
             df = cls._prepare_data(df, numeric_columns)
@@ -1365,7 +1706,8 @@ class SleepMetricsCalculator:
             # 6. 计算睡眠阶段（从入睡时间开始）
             sleep_phases_data = cls._calculate_sleep_stages(
                 df[(df['upload_time'] >= sleep_start_time) & 
-                   (df['upload_time'] <= basic_metrics['wakeup_time'])].copy()
+                   (df['upload_time'] <= basic_metrics['wakeup_time'])].copy(),
+                use_trusleep=True
             )
             
             # 添加从就寝时间到入睡时间的清醒阶段

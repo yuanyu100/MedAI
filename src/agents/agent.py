@@ -6,7 +6,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import MessagesState
 from langgraph.graph.message import add_messages
 from langchain_core.messages import BaseMessage
-from langchain.tools import tool, ToolRuntime
+from langchain.tools import tool
 
 # from coze_coding_utils.runtime_ctx.context import default_headers
 import sys
@@ -42,7 +42,7 @@ class AgentState(MessagesState):
 
 
 @tool
-def bed_monitoring_db_analyzer_tool(runtime: ToolRuntime, table_name: str = "device_data") -> str:
+def bed_monitoring_db_analyzer_tool(table_name: str = "device_data") -> str:
     """
     病床监护数据库数据分析工具
     
@@ -68,12 +68,11 @@ def bed_monitoring_db_analyzer_tool(runtime: ToolRuntime, table_name: str = "dev
     """
     from tools.bed_monitoring_db_analyzer import analyze_bed_monitoring_from_db
     
-    ctx = runtime.context
     result = analyze_bed_monitoring_from_db(table_name)
     return result
 
 @tool
-def trend_analysis_tool(runtime: ToolRuntime, file_path: str) -> str:
+def trend_analysis_tool(file_path: str) -> str:
     """
     多天监护数据趋势分析工具（To B 专用）
     
@@ -113,8 +112,9 @@ def trend_analysis_tool(runtime: ToolRuntime, file_path: str) -> str:
         - 单日数据分析结果可能不够准确
         - 风险评分仅供参考，临床决策请结合医生判断
     """
-    ctx = runtime.context
-    result = analyze_trend_and_pattern(file_path, runtime)
+    from tools.analyze_trend_tool import analyze_trend_and_pattern
+    
+    result = analyze_trend_and_pattern(file_path)
     return result
 
 

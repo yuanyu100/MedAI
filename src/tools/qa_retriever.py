@@ -259,7 +259,7 @@ def qa_retrieve_internal(table_name: str = "vital_signs", question: str = "整�
 
 
 @tool
-def qa_retriever(question: str = "整体情况如何", table_name: str = "vital_signs", runtime: ToolRuntime = None) -> str:
+def qa_retriever(question: str = "整体情况如何", table_name: str = "vital_signs") -> str:
     """
     病床监护数据问答检索工具（To C 专用）
 
