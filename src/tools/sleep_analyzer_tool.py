@@ -12,6 +12,9 @@ from typing import Dict, List, Tuple, Optional
 import warnings
 from langchain_community.tools import tool
 
+# 导入高级睡眠分期分析器
+from .advanced_sleep_stage_analyzer import AdvancedSleepStageAnalyzer
+
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -1211,7 +1214,14 @@ class SleepMetricsCalculator:
         Returns:
             睡眠准备时间（分钟）
         """
+        print(f"\n=== 开始计算睡眠准备时间 ===")
+        print(f"就寝时间: {bedtime}")
+        print(f"睡眠时段数据量: {len(sleep_period_data)} 条")
+        if not sleep_period_data.empty:
+            print(f"数据时间范围: {sleep_period_data['upload_time'].min()} 到 {sleep_period_data['upload_time'].max()}")
+        
         if sleep_period_data.empty:
+            print(f"数据为空，返回默认值: {SleepMetricsCalculator.DEFAULT_SLEEP_PREP_TIME} 分钟")
             return SleepMetricsCalculator.DEFAULT_SLEEP_PREP_TIME
         
         # 计算心率标准差和心律失常均值
@@ -1250,28 +1260,395 @@ class SleepMetricsCalculator:
         else:
             sleep_period_data['body_moves_avg_5'] = 100
         
-        # 找到第一个稳定睡眠位置，考虑更多生理指标
-        stable_mask = (
-            (sleep_period_data['hr_std_5'] <= SleepMetricsCalculator.STABLE_HR_STD_THRESHOLD) & 
-            (sleep_period_data['arrhythmia_avg_5'] <= SleepMetricsCalculator.STABLE_ARRHYTHMIA_THRESHOLD) &
-            (sleep_period_data.get('rr_std_5', 0) <= 5) &  # 呼吸率标准差 <= 5
-            (sleep_period_data.get('body_moves_avg_5', 0) <= 15)  # 体动比率 <= 15
+        # 睡眠启动点识别参数
+        SLEEP_START_WINDOW = 10  # 主判定窗口延长至10分钟
+        SLEEP_START_VERIFY_WINDOW = 8  # 二次验证窗口8分钟
+        AWAKE_BASELINE_WINDOW_START = 15  # 清醒基线从上床后15分钟开始
+        AWAKE_BASELINE_WINDOW_END = 45   # 至45分钟结束
+        
+        SLEEP_HR_RATIO = 0.75  # 心率阈值降至清醒基线的75%
+        MAX_SLEEP_START_BODY_MOVE = 0.2  # 体动比例≤0.2%
+        MIN_SLEEP_START_RESP_RATE = 12
+        MAX_SLEEP_START_RESP_RATE = 15  # 呼吸率上限降至15次/分
+        STABLE_HR_STD_THRESHOLD = 2  # 心率标准差≤2
+        STABLE_RESP_STD_THRESHOLD = 1.5  # 呼吸标准差≤1.5
+        STABLE_BODY_MOVE_THRESHOLD = 1  # 稳定期体动≤1%
+        
+        # 计算清醒状态的心率基线（取就寝后15-45分钟的平均心率作为清醒基线）
+        bedtime_window = sleep_period_data[
+            (sleep_period_data['upload_time'] >= bedtime + timedelta(minutes=AWAKE_BASELINE_WINDOW_START)) &
+            (sleep_period_data['upload_time'] <= bedtime + timedelta(minutes=AWAKE_BASELINE_WINDOW_END))
+        ]
+        
+        # 计算清醒基线时，考虑体动率，确保只使用真正清醒时的数据
+        if not bedtime_window.empty:
+            # 过滤掉体动率过低的数据，确保只使用真正清醒时的数据
+            awake_data = bedtime_window[bedtime_window.get('body_moves_ratio', 0) >= 1]
+            if not awake_data.empty:
+                awake_heart_rate_baseline = awake_data['heart_rate'].mean()
+            else:
+                # 如果没有足够的体动数据，使用整个窗口的平均心率
+                awake_heart_rate_baseline = bedtime_window['heart_rate'].mean()
+        else:
+            # 如果没有足够的数据，使用整体平均心率
+            awake_heart_rate_baseline = sleep_period_data['heart_rate'].mean()
+        
+        # 确保心率基线合理，设置上下限
+        awake_heart_rate_baseline = max(60, min(100, awake_heart_rate_baseline))
+        
+        # 输出心率基线计算结果
+        print(f"\n=== 心率基线计算结果 ===")
+        print(f"清醒基线窗口: {AWAKE_BASELINE_WINDOW_START}-{AWAKE_BASELINE_WINDOW_END}分钟")
+        print(f"基线窗口数据量: {len(bedtime_window)} 条")
+        print(f"计算得到的心率基线: {awake_heart_rate_baseline:.2f} 次/分")
+        print(f"心率基线范围: 60-100 次/分")
+        
+        # 计算心率和呼吸率的标准差
+        sleep_period_data['hr_std_5'] = sleep_period_data['heart_rate'].rolling(
+            window=5, center=True, min_periods=1
+        ).std()
+        
+        if 'respiratory_rate' in sleep_period_data.columns:
+            sleep_period_data['resp_std_5'] = sleep_period_data['respiratory_rate'].rolling(
+                window=5, center=True, min_periods=1
+            ).std()
+        else:
+            sleep_period_data['resp_std_5'] = 0
+        
+        # 第一步：主窗口判定
+        sleep_start_mask = (
+            (sleep_period_data['heart_rate'] <= awake_heart_rate_baseline * SLEEP_HR_RATIO) &
+            (sleep_period_data.get('body_moves_ratio', 0) <= MAX_SLEEP_START_BODY_MOVE) &
+            (sleep_period_data.get('respiratory_rate', 0) >= MIN_SLEEP_START_RESP_RATE) &
+            (sleep_period_data.get('respiratory_rate', 0) <= MAX_SLEEP_START_RESP_RATE) &
+            (sleep_period_data['hr_std_5'] <= STABLE_HR_STD_THRESHOLD) &
+            (sleep_period_data.get('resp_std_5', 0) <= STABLE_RESP_STD_THRESHOLD)
         )
-        stable_indices = sleep_period_data[stable_mask].index
+        sleep_period_data['is_sleep_start_candidate'] = sleep_start_mask
+        sleep_period_data['sleep_start_main_window'] = sleep_period_data['is_sleep_start_candidate']\
+            .rolling(window=SLEEP_START_WINDOW, min_periods=SLEEP_START_WINDOW).sum() == SLEEP_START_WINDOW
         
-        if stable_indices.empty:
-            # 如果没有找到稳定点，设置最大睡眠准备时间为120分钟
-            return min(SleepMetricsCalculator.DEFAULT_SLEEP_PREP_TIME,120)
+        # 第二步：二次验证窗口（确保不反弹）
+        sleep_period_data['sleep_start_verify_window'] = sleep_period_data['sleep_start_main_window']\
+            .rolling(window=SLEEP_START_VERIFY_WINDOW, min_periods=1).max()  # 主窗口达标后，后续SLEEP_START_VERIFY_WINDOW分钟需维持
         
-        first_stable_idx = stable_indices[0]
-        stable_sleep_start = sleep_period_data.loc[first_stable_idx, 'upload_time']
-        sleep_prep_time = (stable_sleep_start - bedtime).total_seconds() / 60
+        # 最终睡眠启动点：同时满足主窗口+验证窗口
+        final_sleep_start_indices = sleep_period_data[
+            (sleep_period_data['sleep_start_main_window']) &
+            (sleep_period_data['sleep_start_verify_window'])
+        ].index
         
-        # 设置最大睡眠准备时间为60分钟，避免出现极端情况
-        max_sleep_prep_time = 60
-        sleep_prep_time = min(sleep_prep_time, max_sleep_prep_time)
+        # 输出睡眠启动点检测结果
+        print(f"\n=== 睡眠启动点检测结果 ===")
+        print(f"主判定窗口: {SLEEP_START_WINDOW}分钟")
+        print(f"二次验证窗口: {SLEEP_START_VERIFY_WINDOW}分钟")
+        print(f"检测到的睡眠启动点数量: {len(final_sleep_start_indices)}")
+        if not final_sleep_start_indices.empty:
+            first_sleep_start_idx = final_sleep_start_indices[0]
+            sleep_start_time = sleep_period_data.loc[first_sleep_start_idx, 'upload_time'] - timedelta(minutes=SLEEP_START_WINDOW-1)
+            sleep_prep_time = (sleep_start_time - bedtime).total_seconds() / 60
+            print(f"第一个睡眠启动点时间: {sleep_start_time}")
+            print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
         
-        return max(sleep_prep_time, SleepMetricsCalculator.MIN_SLEEP_PREP_TIME)
+        # 基于睡眠周期规律的辅助判断
+        # 如果没有找到睡眠启动点，尝试根据睡眠周期规律推断
+        if final_sleep_start_indices.empty:
+            # 计算从就寝时间开始的时间点，按照90分钟的睡眠周期规律
+            # 第一个REM阶段通常出现在入睡后70-90分钟
+            for cycle_minutes in [70, 80, 90, 100, 110, 120, 180, 270]:
+                # 计算可能的REM阶段开始时间
+                rem_start_time = bedtime + timedelta(minutes=cycle_minutes)
+                # 检查该时间点前后的数据是否符合REM睡眠特征
+                rem_window_data = sleep_period_data[
+                    (sleep_period_data['upload_time'] >= rem_start_time - timedelta(minutes=10)) &
+                    (sleep_period_data['upload_time'] <= rem_start_time + timedelta(minutes=20))
+                ]
+                
+                if not rem_window_data.empty:
+                    # 检查是否符合REM睡眠特征：心率较高、呼吸不稳定、体动少
+                    avg_hr = rem_window_data['heart_rate'].mean()
+                    avg_rr = rem_window_data['respiratory_rate'].mean()
+                    avg_body_move = rem_window_data['body_moves_ratio'].mean()
+                    hr_std = rem_window_data['heart_rate'].std()
+                    rr_std = rem_window_data['respiratory_rate'].std()
+                    
+                    # REM睡眠特征：心率较高（接近清醒水平）、呼吸不稳定（标准差大）、体动少
+                    if ((avg_hr > awake_heart_rate_baseline * 0.9) and 
+                        (hr_std > 6) and 
+                        (rr_std > 3) and 
+                        (avg_body_move <= 1.5)):
+                        # 找到可能的REM阶段，推断入睡时间为REM开始前90分钟
+                        inferred_sleep_start_time = rem_start_time - timedelta(minutes=90)
+                        # 检查推断的入睡时间是否合理
+                        if inferred_sleep_start_time >= bedtime:
+                            # 计算睡眠准备时间
+                            sleep_prep_time = (inferred_sleep_start_time - bedtime).total_seconds() / 60
+                            
+                            # 检查推断的睡眠准备时间是否合理
+                            # 分析从就寝时间到推断入睡时间的体动和心率
+                            prep_period_data = sleep_period_data[
+                                (sleep_period_data['upload_time'] >= bedtime) &
+                                (sleep_period_data['upload_time'] < inferred_sleep_start_time)
+                            ]
+                            
+                            if not prep_period_data.empty:
+                                avg_prep_body_move = prep_period_data['body_moves_ratio'].mean()
+                                avg_prep_heart_rate = prep_period_data['heart_rate'].mean()
+                                
+                                # 检查整个睡眠准备期的心率变化
+                                # 查找心率持续较高的时间段
+                                high_hr_periods = []
+                                current_period_start = None
+                                
+                                for i in range(len(sleep_period_data)):
+                                    current_time = sleep_period_data.loc[i, 'upload_time']
+                                    if current_time >= inferred_sleep_start_time:
+                                        break
+                                    current_hr = sleep_period_data.loc[i, 'heart_rate']
+                                    
+                                    # 如果心率超过68次/分钟，认为可能处于清醒状态
+                                    if current_hr > 68:
+                                        if current_period_start is None:
+                                            current_period_start = current_time
+                                    else:
+                                        if current_period_start is not None:
+                                            # 计算高心率持续时间
+                                            duration = (current_time - current_period_start).total_seconds() / 60
+                                            if duration >= 30:  # 持续30分钟以上
+                                                high_hr_periods.append((current_period_start, current_time))
+                                            current_period_start = None
+                                
+                                # 如果有高心率持续时间段，使用最后一个高心率期结束时间作为入睡时间
+                                if high_hr_periods:
+                                    last_high_hr_end = high_hr_periods[-1][1]
+                                    sleep_prep_time = (last_high_hr_end - bedtime).total_seconds() / 60
+                                # 综合考虑体动率和心率，当体动频繁或心率较高时，认为用户可能仍然清醒
+                                elif avg_prep_body_move > 3 or avg_prep_heart_rate > 68:
+                                    # 查找心率稳定下降且体动较少的时间点
+                                    low_hr_found = False
+                                    for i in range(len(sleep_period_data)):
+                                        current_time = sleep_period_data.loc[i, 'upload_time']
+                                        if current_time < bedtime + timedelta(minutes=120):
+                                            continue
+                                        if current_time >= inferred_sleep_start_time:
+                                            break
+                                        # 检查当前时间点及之后4分钟的心率和体动情况
+                                        window_data = sleep_period_data[
+                                            (sleep_period_data['upload_time'] >= current_time) &
+                                            (sleep_period_data['upload_time'] <= current_time + timedelta(minutes=4))
+                                        ]
+                                        if len(window_data) >= 5:
+                                            if (window_data['heart_rate'].mean() <= 65 and 
+                                                window_data['body_moves_ratio'].mean() <= 1):
+                                                # 找到心率稳定下降且体动较少的时间点
+                                                new_sleep_start_time = current_time
+                                                sleep_prep_time = (new_sleep_start_time - bedtime).total_seconds() / 60
+                                                low_hr_found = True
+                                                break
+                                    # 如果没有找到合适的时间点，使用推断的睡眠准备时间
+                                    if not low_hr_found:
+                                        # 确保睡眠准备时间至少为90分钟
+                                        sleep_prep_time = max(sleep_prep_time, 90)
+                            # 输出REM睡眠特征检测结果
+                            print(f"\n=== REM睡眠特征检测结果 ===")
+                            print(f"检测到的REM阶段开始时间: {rem_start_time}")
+                            print(f"推断的睡眠启动时间: {inferred_sleep_start_time}")
+                            print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+                            print(f"REM睡眠特征: 心率={avg_hr:.2f}, 心率标准差={hr_std:.2f}, 呼吸标准差={rr_std:.2f}, 体动率={avg_body_move:.2f}")
+                            
+                            # 返回计算结果
+                            return max(sleep_prep_time, SleepMetricsCalculator.MIN_SLEEP_PREP_TIME)
+        
+        if not final_sleep_start_indices.empty:
+            # 使用睡眠启动点计算入睡准备时间
+            first_sleep_start_idx = final_sleep_start_indices[0]
+            # 睡眠启动点是主窗口满足条件的结束时间，因此需要减去(SLEEP_START_WINDOW-1)分钟得到开始时间
+            sleep_start_time = sleep_period_data.loc[first_sleep_start_idx, 'upload_time'] - timedelta(minutes=SLEEP_START_WINDOW-1)
+            sleep_prep_time = (sleep_start_time - bedtime).total_seconds() / 60
+            
+            # 额外检查：如果在睡眠准备期内体动频繁，延长睡眠准备时间
+            # 分析更长时间段的体动模式，确保准确检测长时间清醒状态
+            first_three_hours_data = sleep_period_data[
+                (sleep_period_data['upload_time'] >= bedtime) &
+                (sleep_period_data['upload_time'] <= bedtime + timedelta(hours=3))
+            ]
+            
+            if not first_three_hours_data.empty:
+                # 分析每小时的体动率和心率
+                hourly_data = []
+                for hour in range(3):
+                    start_time = bedtime + timedelta(hours=hour)
+                    end_time = start_time + timedelta(hours=1)
+                    hour_data = first_three_hours_data[
+                        (first_three_hours_data['upload_time'] >= start_time) &
+                        (first_three_hours_data['upload_time'] < end_time)
+                    ]
+                    if not hour_data.empty:
+                        hourly_data.append({
+                            'hour': hour + 1,
+                            'avg_body_move': hour_data['body_moves_ratio'].mean(),
+                            'avg_heart_rate': hour_data['heart_rate'].mean(),
+                            'data_points': len(hour_data)
+                        })
+                
+                # 综合分析体动模式
+                high_activity_hours = 0
+                for hour_info in hourly_data:
+                    if hour_info['avg_body_move'] > 3 or hour_info['avg_heart_rate'] > 68:
+                        high_activity_hours += 1
+                
+                # 如果前3小时中有2个或更多小时体动频繁或心率较高，认为用户可能仍然清醒
+                if high_activity_hours >= 2:
+                    # 查找心率稳定下降且体动较少的时间点
+                    # 从120分钟开始查找连续5分钟心率≤65且体动率≤1%的时间点
+                    low_hr_found = False
+                    for i in range(len(sleep_period_data)):
+                        current_time = sleep_period_data.loc[i, 'upload_time']
+                        if current_time < bedtime + timedelta(minutes=120):
+                            continue
+                        
+                        # 检查当前时间点及之后4分钟的心率和体动情况
+                        window_data = sleep_period_data[
+                            (sleep_period_data['upload_time'] >= current_time) &
+                            (sleep_period_data['upload_time'] <= current_time + timedelta(minutes=4))
+                        ]
+                        
+                        if len(window_data) >= 5:
+                            if (window_data['heart_rate'].mean() <= 65 and 
+                                window_data['body_moves_ratio'].mean() <= 1):
+                                # 找到连续5分钟心率≤65且体动率≤1%的时间点
+                                new_sleep_start_time = current_time
+                                sleep_prep_time = (new_sleep_start_time - bedtime).total_seconds() / 60
+                                low_hr_found = True
+                                break
+                    
+                    # 如果没有找到合适的时间点，使用120分钟作为睡眠准备时间
+                    if not low_hr_found:
+                        sleep_prep_time = 120
+                # 如果前3小时中有1个小时体动频繁或心率较高，延长睡眠准备时间至90分钟
+                elif high_activity_hours == 1:
+                    sleep_prep_time = max(sleep_prep_time, 90)
+                
+                # 输出体动率分析结果
+                print(f"\n=== 体动率分析结果 ===")
+                for hour_info in hourly_data:
+                    print(f"第{hour_info['hour']}小时: 体动率={hour_info['avg_body_move']:.2f}%, 心率={hour_info['avg_heart_rate']:.2f}, 数据点={hour_info['data_points']}")
+                print(f"高活动小时数: {high_activity_hours}")
+                print(f"调整后的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+        else:
+            # 如果没有找到睡眠启动点，使用原来的稳定睡眠点判定
+            # 找到第一个稳定睡眠位置，考虑更多生理指标
+            # 构建稳定睡眠点的条件，根据数据中是否存在 arrhythmia_ratio 字段来调整条件
+            if 'arrhythmia_ratio' in sleep_period_data.columns:
+                stable_mask = (
+                    (sleep_period_data['hr_std_5'] <= STABLE_HR_STD_THRESHOLD) & 
+                    (sleep_period_data['arrhythmia_avg_5'] <= SleepMetricsCalculator.STABLE_ARRHYTHMIA_THRESHOLD) &
+                    (sleep_period_data.get('resp_std_5', 0) <= STABLE_RESP_STD_THRESHOLD) &  # 呼吸标准差 <= 2
+                    (sleep_period_data.get('body_moves_avg_5', 0) <= STABLE_BODY_MOVE_THRESHOLD) &  # 体动比率 <= 2%
+                    (sleep_period_data['heart_rate'] <= awake_heart_rate_baseline * 0.85)  # 心率降至清醒基线的85%以下
+                )
+            else:
+                # 如果没有 arrhythmia_ratio 字段，跳过这个条件
+                stable_mask = (
+                    (sleep_period_data['hr_std_5'] <= STABLE_HR_STD_THRESHOLD) &
+                    (sleep_period_data.get('resp_std_5', 0) <= STABLE_RESP_STD_THRESHOLD) &  # 呼吸标准差 <= 2
+                    (sleep_period_data.get('body_moves_avg_5', 0) <= STABLE_BODY_MOVE_THRESHOLD) &  # 体动比率 <= 2%
+                    (sleep_period_data['heart_rate'] <= awake_heart_rate_baseline * 0.85)  # 心率降至清醒基线的85%以下
+                )
+            stable_indices = sleep_period_data[stable_mask].index
+            
+            # 分析体动率和心率模式，判断用户是否真的入睡
+            print(f"\n=== 体动率和心率模式分析 ===")
+            # 计算整个睡眠时段的平均体动率和心率
+            avg_body_move_total = sleep_period_data['body_moves_ratio'].mean()
+            avg_heart_rate_total = sleep_period_data['heart_rate'].mean()
+            print(f"整个睡眠时段平均体动率: {avg_body_move_total:.4f}%")
+            print(f"整个睡眠时段平均心率: {avg_heart_rate_total:.2f} 次/分")
+            print(f"清醒基线心率: {awake_heart_rate_baseline:.2f} 次/分")
+            
+            # 检查是否存在明显的体动或心率变化
+            body_move_std = sleep_period_data['body_moves_ratio'].std()
+            heart_rate_std = sleep_period_data['heart_rate'].std()
+            print(f"体动率标准差: {body_move_std:.4f}")
+            print(f"心率标准差: {heart_rate_std:.2f}")
+            
+            # 如果体动率非常低但心率仍然较高，认为用户可能仍然清醒
+            if avg_body_move_total < 0.1 and avg_heart_rate_total > awake_heart_rate_baseline * 0.9:
+                print("警告: 体动率极低但心率较高，可能仍然处于清醒状态")
+                # 查找心率开始下降的时间点
+                sleep_prep_time = 0
+                
+                # 分析每小时的心率变化，找到第一个心率明显下降的小时
+                hourly_hr_data = []
+                for hour in range(8):  # 检查前8小时
+                    start_time = bedtime + timedelta(hours=hour)
+                    end_time = start_time + timedelta(hours=1)
+                    hour_data = sleep_period_data[
+                        (sleep_period_data['upload_time'] >= start_time) &
+                        (sleep_period_data['upload_time'] < end_time)
+                    ]
+                    if not hour_data.empty:
+                        hourly_hr = hour_data['heart_rate'].mean()
+                        hourly_hr_data.append({
+                            'hour': hour,
+                            'avg_hr': hourly_hr,
+                            'start_time': start_time,
+                            'end_time': end_time
+                        })
+                
+                # 输出每小时心率数据
+                print("\n=== 每小时心率分析 ===")
+                for hour_info in hourly_hr_data:
+                    print(f"第{hour_info['hour']}小时: 平均心率={hour_info['avg_hr']:.2f} 次/分, 时间范围: {hour_info['start_time']} - {hour_info['end_time']}")
+                
+                # 查找第一个心率低于清醒基线90%的小时
+                for hour_info in hourly_hr_data:
+                    if hour_info['avg_hr'] <= awake_heart_rate_baseline * 0.9:
+                        # 找到心率开始下降的时间点
+                        sleep_start_time = hour_info['start_time']
+                        sleep_prep_time = (sleep_start_time - bedtime).total_seconds() / 60
+                        print(f"\n找到心率下降时间点: {sleep_start_time}")
+                        print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+                        break
+                
+                # 如果没有找到心率下降的时间点，使用默认值
+                if sleep_prep_time == 0:
+                    print("\n未找到心率下降时间点，使用默认睡眠准备时间")
+                    sleep_prep_time = 360  # 默认6小时，用户1-2点入睡
+            elif stable_indices.empty:
+                # 如果没有找到稳定点，检查前60分钟的体动情况
+                first_hour_data = sleep_period_data[
+                    (sleep_period_data['upload_time'] >= bedtime) &
+                    (sleep_period_data['upload_time'] <= bedtime + timedelta(minutes=60))
+                ]
+                
+                if not first_hour_data.empty:
+                    avg_body_move_first_hour = first_hour_data['body_moves_ratio'].mean()
+                    # 如果前60分钟平均体动率超过5%，认为体动频繁，使用60分钟作为睡眠准备时间
+                    if avg_body_move_first_hour > 5:
+                        return 60
+                # 如果没有找到稳定点，设置最大睡眠准备时间为120分钟
+                return min(SleepMetricsCalculator.DEFAULT_SLEEP_PREP_TIME, 120)
+            else:
+                # 找到第一个稳定睡眠点
+                first_stable_idx = stable_indices[0]
+                stable_sleep_start = sleep_period_data.loc[first_stable_idx, 'upload_time']
+                sleep_prep_time = (stable_sleep_start - bedtime).total_seconds() / 60
+                print(f"找到稳定睡眠点: {stable_sleep_start}")
+                print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+        
+        # 移除最大睡眠准备时间限制，让系统根据实际情况判断
+        # 但仍然确保睡眠准备时间不小于最小限制
+        final_sleep_prep_time = max(sleep_prep_time, SleepMetricsCalculator.MIN_SLEEP_PREP_TIME)
+        
+        # 输出最终计算结果
+        print(f"\n=== 最终睡眠准备时间计算结果 ===")
+        print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+        print(f"最小睡眠准备时间: {SleepMetricsCalculator.MIN_SLEEP_PREP_TIME} 分钟")
+        print(f"最终返回的睡眠准备时间: {final_sleep_prep_time:.2f} 分钟")
+        print(f"=== 睡眠准备时间计算完成 ===")
+        
+        return final_sleep_prep_time
     
     @staticmethod
     def _calculate_average_metrics(sleep_period_data: pd.DataFrame) -> Dict:
@@ -1307,13 +1684,14 @@ class SleepMetricsCalculator:
         }
     
     @classmethod
-    def _calculate_sleep_stages(cls, sleep_period_data: pd.DataFrame, use_trusleep: bool = True) -> Dict:
+    def _calculate_sleep_stages(cls, sleep_period_data: pd.DataFrame, use_trusleep: bool = True, sleep_staging_method: str = "ensemble") -> Dict:
         """
         计算睡眠阶段
         
         Args:
             sleep_period_data: 睡眠时段数据
             use_trusleep: 是否使用 TruSleep 算法
+            sleep_staging_method: 睡眠分期方法，可选值: "rule" (基于规则推理), "ensemble" (基于集成学习)
             
         Returns:
             睡眠阶段数据
@@ -1332,6 +1710,18 @@ class SleepMetricsCalculator:
         
         try:
             # 筛选有效数据
+            print(f"\n=== 调试信息: _calculate_sleep_stages 方法 ===")
+            print(f"输入数据行数: {len(sleep_period_data)}")
+            print(f"输入时间范围: {sleep_period_data['upload_time'].min()} 到 {sleep_period_data['upload_time'].max()}")
+            print(f"睡眠分期方法: {sleep_staging_method}")
+            
+            # 打印数据的基本统计信息
+            if not sleep_period_data.empty:
+                print(f"心率范围: {sleep_period_data['heart_rate'].min():.2f} - {sleep_period_data['heart_rate'].max():.2f}")
+                print(f"呼吸率范围: {sleep_period_data['respiratory_rate'].min():.2f} - {sleep_period_data['respiratory_rate'].max():.2f}")
+                print(f"体动率范围: {sleep_period_data['body_moves_ratio'].min():.4f} - {sleep_period_data['body_moves_ratio'].max():.4f}")
+            
+            # 筛选有效数据
             sleep_data = sleep_period_data[
                 (sleep_period_data['heart_rate'] >= SleepMetricsCalculator.MIN_HEART_RATE) &
                 (sleep_period_data['heart_rate'] <= SleepMetricsCalculator.MAX_HEART_RATE) &
@@ -1341,7 +1731,10 @@ class SleepMetricsCalculator:
                 (sleep_period_data['respiratory_rate'].notna())
             ].copy()
             
+            print(f"筛选后数据行数: {len(sleep_data)}")
+            
             if sleep_data.empty:
+                print("警告: 筛选后的数据为空，返回空结果")
                 return result
             
             # 计算基线心率
@@ -1357,29 +1750,76 @@ class SleepMetricsCalculator:
             baseline_heart_rate = awake_data['heart_rate'].mean() if not awake_data.empty else 70
             
             # 计算睡眠阶段
-            if use_trusleep:
-                print("\n=== 调试信息: 使用 TruSleep 算法进行睡眠分期 ===")
-                sleep_data = SleepStageAnalyzer.calculate_trusleep_stages(
-                    sleep_data, baseline_heart_rate
-                )
+            print(f"\n=== 调试信息: 使用 {sleep_staging_method} 睡眠分期分析方法 ===")
+            
+            # 导入所需的分析器
+            from .rule_based_sleep_stage_analyzer import RuleBasedSleepStageAnalyzer
+            
+            # 根据选择的方法进行睡眠分期
+            if sleep_staging_method == "rule":
+                # 使用基于规则推理的方法
+                print(f"\n=== 调试信息: 调用 RuleBasedSleepStageAnalyzer ===")
+                print(f"输入数据行数: {len(sleep_data)}")
+                print(f"输入时间范围: {sleep_data['upload_time'].min()} 到 {sleep_data['upload_time'].max()}")
+                
+                rule_analyzer = RuleBasedSleepStageAnalyzer()
+                analyzed_data = rule_analyzer.analyze_sleep_stages_by_rules(sleep_data)
+                
+                print(f"\n=== 调试信息: RuleBasedSleepStageAnalyzer 结果 ===")
+                print(f"分析后数据行数: {len(analyzed_data)}")
+                if not analyzed_data.empty:
+                    print(f"分析后阶段分布:")
+                    stage_counts = analyzed_data['stage_value'].value_counts()
+                    for stage, count in stage_counts.items():
+                        print(f"阶段 {stage} ({rule_analyzer.get_stage_label(stage)}): {count} 条")
+                
+                # 规则推理分析器: 0=清醒, 1=N1, 2=N2, 3=N3, 4=REM
+                # 当前系统: 1=深睡, 2=浅睡, 3=眼动, 4=清醒
+                stage_mapping = {
+                    0: 4,  # 清醒 → 清醒
+                    1: 2,  # N1 → 浅睡
+                    2: 2,  # N2 → 浅睡
+                    3: 1,  # N3 → 深睡
+                    4: 3   # REM → 眼动
+                }
+                print(f"\n=== 调试信息: 阶段映射 ===")
+                print(stage_mapping)
             else:
-                print("\n=== 调试信息: 使用传统算法进行睡眠分期 ===")
-                sleep_data = SleepStageAnalyzer.calculate_optimized_sleep_stages(
-                    sleep_data, baseline_heart_rate
-                )
+                # 使用基于集成学习的方法
+                print(f"\n=== 调试信息: 调用 AdvancedSleepStageAnalyzer ===")
+                advanced_analyzer = AdvancedSleepStageAnalyzer()
+                analyzed_data = advanced_analyzer.analyze_sleep_stages_by_ensemble_learning(sleep_data)
+                
+                # 高级分析器: 0=清醒, 1=N1, 2=N2, 3=N3, 4=REM
+                # 当前系统: 1=深睡, 2=浅睡, 3=眼动, 4=清醒
+                stage_mapping = {
+                    0: 4,  # 清醒 → 清醒
+                    1: 2,  # N1 → 浅睡
+                    2: 2,  # N2 → 浅睡
+                    3: 1,  # N3 → 深睡
+                    4: 3   # REM → 眼动
+                }
             
-            # 按优先级分配阶段
-            awake_mask = sleep_data['is_awake_continuous']
-            sleep_data.loc[awake_mask, ['stage_value', 'stage_label']] = [4, "清醒"]
+            # 打印分析器返回的原始阶段值，查看映射前的阶段分布
+            print(f"\n=== 调试信息: 映射前的阶段分布 ===")
+            print(f"分析器返回的阶段值: {analyzed_data['stage_value'].unique()}")
             
-            deep_mask = (~awake_mask) & sleep_data['is_deep_continuous']
-            sleep_data.loc[deep_mask, ['stage_value', 'stage_label']] = [1, "深睡"]
+            # 确保 analyzed_data 的索引和 sleep_data 的索引匹配
+            # 首先创建一个字典，将 upload_time 映射到 stage_value
+            stage_map = dict(zip(analyzed_data['upload_time'], analyzed_data['stage_value']))
             
-            rem_mask = (~awake_mask) & (~deep_mask) & sleep_data['is_rem_continuous']
-            sleep_data.loc[rem_mask, ['stage_value', 'stage_label']] = [3, "眼动"]
+            # 然后使用这个字典来填充 sleep_data['stage_value']
+            sleep_data['stage_value'] = sleep_data['upload_time'].map(stage_map)
             
-            light_mask = (~awake_mask) & (~deep_mask) & (~rem_mask)
-            sleep_data.loc[light_mask, ['stage_value', 'stage_label']] = [2, "浅睡"]
+            # 应用阶段映射
+            sleep_data['stage_value'] = sleep_data['stage_value'].map(stage_mapping).fillna(4).astype(int)
+            
+            # 打印映射后的阶段分布
+            print(f"\n=== 调试信息: 映射后的阶段分布 ===")
+            print(f"映射后的阶段值: {sleep_data['stage_value'].unique()}")
+            print(f"映射后的阶段值数量: {len(sleep_data['stage_value'].unique())}")
+            
+            sleep_data['stage_label'] = sleep_data['stage_value'].apply(SleepStageAnalyzer.get_stage_label)
             
             # 计算时间间隔
             time_diffs = sleep_data['upload_time'].diff().dt.total_seconds() / 60
@@ -1390,18 +1830,40 @@ class SleepMetricsCalculator:
                 time_intervals.iloc[0] = 1
             
             # 生成阶段序列
-            stages_sequence = [
-                {
-                    'stage_value': int(row['stage_value']),
+            stages_sequence = []
+            for idx, row in sleep_data.iterrows():
+                try:
+                    # 确保 stage_value 是整数
+                    stage_value = int(row['stage_value']) if not pd.isna(row['stage_value']) else 4
+                except:
+                    stage_value = 4  # 默认值为清醒
+                
+                stages_sequence.append({
+                    'stage_value': stage_value,
                     'stage_label': row['stage_label'],
                     'time': row['upload_time'],
                     'time_interval': time_intervals.iloc[idx] if idx < len(time_intervals) else 1
-                }
-                for idx, row in sleep_data.iterrows()
-            ]
+                })
+            
+            # 打印原始阶段序列，查看平滑前的阶段分布
+            print(f"\n=== 调试信息: 平滑前的阶段序列 ===")
+            stage_counts_original = {}
+            for stage in stages_sequence:
+                stage_value = stage['stage_value']
+                if stage_value not in stage_counts_original:
+                    stage_counts_original[stage_value] = 0
+                stage_counts_original[stage_value] += 1
+            
+            for stage_value, count in stage_counts_original.items():
+                print(f"阶段 {stage_value} ({SleepStageAnalyzer.get_stage_label(stage_value)}): {count} 条")
             
             # 平滑处理
             smoothed_stages = SleepStageAnalyzer.smooth_sleep_stages(stages_sequence, min_duration_threshold=3)
+            
+            # 打印平滑后的阶段序列
+            print(f"\n=== 调试信息: 平滑后的阶段序列 ===")
+            for i, stage in enumerate(smoothed_stages):
+                print(f"阶段 {i}: {stage['stage_label']} ({stage['time_interval']:.1f}分钟)")
             
             # 计算各阶段时长和生成阶段片段
             cls._process_sleep_stages(smoothed_stages, result)
@@ -1629,17 +2091,23 @@ class SleepMetricsCalculator:
             return "睡眠质量较差"
     
     @classmethod
-    def calculate_sleep_metrics(cls, df: pd.DataFrame, date_str: str) -> Dict:
+    def calculate_sleep_metrics(cls, df: pd.DataFrame, date_str: str, sleep_staging_method: str = "ensemble") -> Dict:
         """
         分析睡眠指标
-        
+
         Args:
             df: 包含当日及前一天数据的DataFrame
             date_str: 目标日期字符串
-            
+            sleep_staging_method: 睡眠分期方法，可选值: "rule" (基于规则推理), "ensemble" (基于集成学习)
+
         Returns:
             包含睡眠分析结果的字典
         """
+        print(f"\n=== 调试信息: 开始执行 calculate_sleep_metrics 方法 ===")
+        print(f"目标日期: {date_str}")
+        print(f"睡眠分期方法: {sleep_staging_method}")
+        print(f"原始数据量: {len(df)}")
+        
         try:
             logger.info(f"开始分析 {date_str} 的睡眠指标，原始数据量: {len(df)}")
             
@@ -1699,43 +2167,217 @@ class SleepMetricsCalculator:
             # 5. 计算基本睡眠指标
             basic_metrics = cls._calculate_basic_sleep_metrics(night_data, df, target_date, prev_date)
             
-            # 计算入睡时间（就寝时间 + 睡眠准备时间）
-            sleep_prep_time = basic_metrics['sleep_prep_time_minutes']
-            sleep_start_time = basic_metrics['bedtime'] + timedelta(minutes=sleep_prep_time)
-            
-            # 6. 计算睡眠阶段（从入睡时间开始）
+            # 6. 计算睡眠阶段（从就寝时间开始，以便找到实际的入睡时间）
             sleep_phases_data = cls._calculate_sleep_stages(
-                df[(df['upload_time'] >= sleep_start_time) & 
+                df[(df['upload_time'] >= basic_metrics['bedtime']) & 
                    (df['upload_time'] <= basic_metrics['wakeup_time'])].copy(),
-                use_trusleep=True
+                use_trusleep=True,
+                sleep_staging_method=sleep_staging_method
             )
             
-            # 添加从就寝时间到入睡时间的清醒阶段
-            if sleep_prep_time > 0:
-                # 确定清醒阶段的结束时间
-                # 如果有睡眠阶段数据，使用第一个睡眠阶段的开始时间作为清醒阶段的结束时间
+            # 7. 根据睡眠阶段结果确定实际的入睡时间
+            # 入睡时间定义为第一次进入稳定非清醒阶段的时间
+            actual_sleep_start_time = basic_metrics['bedtime']
+            
+            # 打印获取的数据库数据，以便更好地理解数据情况
+            print(f"\n=== 数据库数据概览 ===")
+            print(f"数据总量: {len(df)} 条")
+            print(f"夜间数据量: {len(night_data)} 条")
+            print(f"数据时间范围: {df['upload_time'].min()} 到 {df['upload_time'].max()}")
+            
+            # 分析前几个小时的体动率
+            print("\n=== 体动率分析 ===")
+            for i in range(6):
+                start_time = basic_metrics['bedtime'] + timedelta(hours=i)
+                end_time = start_time + timedelta(hours=1)
+                hour_data = df[(df['upload_time'] >= start_time) & (df['upload_time'] < end_time)]
+                if not hour_data.empty:
+                    avg_body_move = hour_data['body_moves_ratio'].mean()
+                    avg_heart_rate = hour_data['heart_rate'].mean()
+                    avg_resp_rate = hour_data['respiratory_rate'].mean()
+                    print(f"第{i+1}小时 ({start_time.hour}:00-{end_time.hour}:00): 体动率={avg_body_move:.2f}%, 心率={avg_heart_rate:.2f}, 呼吸率={avg_resp_rate:.2f}")
+            
+            # 对于规则方法，直接使用 _calculate_sleep_prep_time 的结果
+            if sleep_staging_method == "rule":
+                # 重新计算睡眠准备时间，使用专门的方法
+                sleep_period_data = df[(df['upload_time'] >= basic_metrics['bedtime']) & 
+                                       (df['upload_time'] <= basic_metrics['wakeup_time'])].copy()
+                print(f"\n=== 计算睡眠准备时间 ===")
+                print(f"使用rule方法，分析数据: {len(sleep_period_data)} 条")
+                sleep_prep_time = SleepMetricsCalculator._calculate_sleep_prep_time(sleep_period_data, basic_metrics['bedtime'])
+                print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+            else:
+                # 对于其他方法，使用原来的逻辑
+                sleep_prep_time = 0
                 if sleep_phases_data['sleep_stage_segments']:
-                    first_stage = sleep_phases_data['sleep_stage_segments'][0]
-                    if first_stage.get('start_time'):
-                        awake_end_time_str = first_stage['start_time']
-                    else:
-                        awake_end_time_str = sleep_start_time.isoformat().replace('T', ' ')
+                    # 查找第一个持续时间较长的非清醒阶段
+                    found_sleep_start = False
+                    for i, segment in enumerate(sleep_phases_data['sleep_stage_segments']):
+                        # 跳过前60分钟内的短睡眠阶段
+                        if segment.get('start_time'):
+                            try:
+                                segment_start_time = datetime.fromisoformat(segment['start_time'].replace(' ', 'T'))
+                                time_from_bedtime = (segment_start_time - basic_metrics['bedtime']).total_seconds() / 60
+                                
+                                # 对于前60分钟内的阶段，需要持续时间至少10分钟才算真正入睡
+                                if time_from_bedtime < 60:
+                                    if segment['label'] != "清醒" and int(segment['value']) >= 10:
+                                        actual_sleep_start_time = segment_start_time
+                                        sleep_prep_time = time_from_bedtime
+                                        found_sleep_start = True
+                                        break
+                                else:
+                                    # 60分钟后，只要是非清醒阶段就算真正入睡
+                                    if segment['label'] != "清醒":
+                                        actual_sleep_start_time = segment_start_time
+                                        sleep_prep_time = time_from_bedtime
+                                        found_sleep_start = True
+                                        break
+                            except:
+                                pass
+                    
+                    # 如果没有找到合适的睡眠开始点，使用原来的逻辑
+                    if not found_sleep_start:
+                        for segment in sleep_phases_data['sleep_stage_segments']:
+                            if segment['label'] != "清醒":
+                                if segment.get('start_time'):
+                                    try:
+                                        actual_sleep_start_time = datetime.fromisoformat(segment['start_time'].replace(' ', 'T'))
+                                        sleep_prep_time = (actual_sleep_start_time - basic_metrics['bedtime']).total_seconds() / 60
+                                        break
+                                    except:
+                                        pass
                 else:
-                    awake_end_time_str = sleep_start_time.isoformat().replace('T', ' ')
+                    # 如果没有睡眠阶段数据，使用原来的睡眠准备时间
+                    sleep_prep_time = basic_metrics['sleep_prep_time_minutes']
+            
+            # 确保睡眠准备时间合理
+            sleep_prep_time = max(0, sleep_prep_time)  # 确保不为负数
+            # 相应调整实际入睡时间
+            actual_sleep_start_time = basic_metrics['bedtime'] + timedelta(minutes=sleep_prep_time)
+            
+            # 8. 更新基本指标中的睡眠准备时间和入睡时间
+            basic_metrics['sleep_prep_time_minutes'] = sleep_prep_time
+            # 同时更新实际入睡时间
+            basic_metrics['actual_sleep_start_time'] = actual_sleep_start_time
+            
+            # 10. 添加从就寝时间到实际入睡时间的清醒阶段
+            if sleep_prep_time > 0:
+                # 确保 sleep_phases_data 包含必要的键
+                if 'sleep_stage_segments' not in sleep_phases_data:
+                    sleep_phases_data['sleep_stage_segments'] = []
+                if 'awake_duration' not in sleep_phases_data:
+                    sleep_phases_data['awake_duration'] = 0
+                
+                # 打印添加睡眠准备时间阶段前的睡眠阶段数量
+                print(f"添加睡眠准备时间阶段前的睡眠阶段数量: {len(sleep_phases_data['sleep_stage_segments'])}")
                 
                 # 在sleep_stage_segments开头添加清醒阶段
                 sleep_phases_data['sleep_stage_segments'].insert(0, {
                     "label": "清醒",
                     "value": str(int(sleep_prep_time)),
                     "start_time": basic_metrics['bedtime'].isoformat().replace('T', ' '),
-                    "end_time": awake_end_time_str
+                    "end_time": actual_sleep_start_time.isoformat().replace('T', ' ')
                 })
                 # 同时更新清醒时长
                 sleep_phases_data['awake_duration'] += sleep_prep_time
+                
+                # 打印添加睡眠准备时间阶段后的睡眠阶段数量
+                print(f"添加睡眠准备时间阶段后的睡眠阶段数量: {len(sleep_phases_data['sleep_stage_segments'])}")
+                print(f"成功添加睡眠准备时间阶段: {sleep_prep_time:.2f} 分钟")
+                print(f"就寝时间: {basic_metrics['bedtime']}")
+                print(f"实际入睡时间: {actual_sleep_start_time}")
             
-            # 7. 计算睡眠阶段占比
+            # 9. 重新计算从实际入睡时间开始的睡眠阶段
+            print(f"\n=== 调试信息: 第二次调用 _calculate_sleep_stages 方法 ===")
+            print(f"实际入睡时间: {actual_sleep_start_time}")
+            print(f"起床时间: {basic_metrics['wakeup_time']}")
+            
+            # 提取从实际入睡时间开始的数据
+            sleep_period_data = df[(df['upload_time'] >= actual_sleep_start_time) & 
+                                  (df['upload_time'] <= basic_metrics['wakeup_time'])].copy()
+            
+            print(f"从实际入睡时间开始的数据行数: {len(sleep_period_data)}")
+            if not sleep_period_data.empty:
+                print(f"数据时间范围: {sleep_period_data['upload_time'].min()} 到 {sleep_period_data['upload_time'].max()}")
+                print(f"平均心率: {sleep_period_data['heart_rate'].mean():.2f}")
+                print(f"平均呼吸率: {sleep_period_data['respiratory_rate'].mean():.2f}")
+                print(f"平均体动率: {sleep_period_data['body_moves_ratio'].mean():.4f}")
+            else:
+                print("警告: 从实际入睡时间开始的数据为空！")
+                # 如果从实际入睡时间开始的数据为空，使用从就寝时间开始的数据
+                sleep_period_data = df[(df['upload_time'] >= basic_metrics['bedtime']) & 
+                                      (df['upload_time'] <= basic_metrics['wakeup_time'])].copy()
+                print(f"使用从就寝时间开始的数据，数据行数: {len(sleep_period_data)}")
+            
+            sleep_phases_data = cls._calculate_sleep_stages(
+                sleep_period_data,
+                use_trusleep=True,
+                sleep_staging_method=sleep_staging_method
+            )
+            
+            print(f"\n=== 调试信息: _calculate_sleep_stages 方法返回结果 ===")
+            print(f"深睡时长: {sleep_phases_data['deep_sleep_duration']} 分钟")
+            print(f"浅睡时长: {sleep_phases_data['light_sleep_duration']} 分钟")
+            print(f"REM时长: {sleep_phases_data['rem_sleep_duration']} 分钟")
+            print(f"清醒时长: {sleep_phases_data['awake_duration']} 分钟")
+            print(f"睡眠阶段数量: {len(sleep_phases_data['sleep_stage_segments'])}")
+            for i, segment in enumerate(sleep_phases_data['sleep_stage_segments']):
+                print(f"阶段{i+1}: {segment['label']} - {segment['value']} 分钟")
+            
+            # 再次添加从就寝时间到实际入睡时间的清醒阶段，确保它被添加到最终结果中
+            if sleep_prep_time > 0:
+                # 确保 sleep_phases_data 包含必要的键
+                if 'sleep_stage_segments' not in sleep_phases_data:
+                    sleep_phases_data['sleep_stage_segments'] = []
+                if 'awake_duration' not in sleep_phases_data:
+                    sleep_phases_data['awake_duration'] = 0
+                
+                # 直接在sleep_stage_segments开头添加清醒阶段，不检查是否存在
+                # 这样可以确保即使重新计算睡眠阶段后，睡眠准备时间阶段仍然被添加
+                sleep_phases_data['sleep_stage_segments'].insert(0, {
+                    "label": "清醒",
+                    "value": str(int(sleep_prep_time)),
+                    "start_time": basic_metrics['bedtime'].isoformat().replace('T', ' '),
+                    "end_time": actual_sleep_start_time.isoformat().replace('T', ' ')
+                })
+                # 同时更新清醒时长
+                sleep_phases_data['awake_duration'] += sleep_prep_time
+                
+                # 打印添加睡眠准备时间阶段后的睡眠阶段数量
+                print(f"再次添加睡眠准备时间阶段后的睡眠阶段数量: {len(sleep_phases_data['sleep_stage_segments'])}")
+                print(f"再次成功添加睡眠准备时间阶段: {sleep_prep_time:.2f} 分钟")
+                print(f"就寝时间: {basic_metrics['bedtime']}")
+                print(f"实际入睡时间: {actual_sleep_start_time}")
+                
+                # 对于rule方法，打印睡眠阶段分析结果
+                if sleep_staging_method == "rule":
+                    # 计算从实际入睡时间到最后阶段结束的总时长
+                    if len(sleep_phases_data['sleep_stage_segments']) > 1:
+                        total_sleep_duration = sum(int(segment['value']) for segment in sleep_phases_data['sleep_stage_segments'][1:])  # 排除第一个清醒阶段
+                    else:
+                        total_sleep_duration = 0
+                    # 确保总时长合理
+                    if total_sleep_duration > 0:
+                        print(f"\n=== Rule方法睡眠阶段分析结果 ===")
+                        print(f"睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+                        print(f"实际入睡时间: {actual_sleep_start_time}")
+                        print(f"睡眠阶段数量: {len(sleep_phases_data['sleep_stage_segments'])}")
+                        print(f"总睡眠时长: {total_sleep_duration} 分钟")
+                        for i, segment in enumerate(sleep_phases_data['sleep_stage_segments']):
+                            print(f"阶段{i+1}: {segment['label']} - {segment['value']} 分钟")
+                    else:
+                        print(f"\n=== Rule方法睡眠阶段分析结果 ===")
+                        print(f"睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+                        print(f"实际入睡时间: {actual_sleep_start_time}")
+                        print(f"睡眠阶段数量: {len(sleep_phases_data['sleep_stage_segments'])}")
+                        print("未检测到睡眠阶段")
+            
+            # 11. 计算睡眠阶段占比
+            # 计算实际的总睡眠时长（深睡+浅睡+REM）
+            actual_sleep_duration = sleep_phases_data['deep_sleep_duration'] + sleep_phases_data['light_sleep_duration'] + sleep_phases_data['rem_sleep_duration']
             phase_ratios = cls._calculate_sleep_phase_ratios(
-                basic_metrics['sleep_duration_minutes'],
+                actual_sleep_duration,
                 sleep_phases_data['deep_sleep_duration'],
                 sleep_phases_data['light_sleep_duration'],
                 sleep_phases_data['rem_sleep_duration'],
@@ -1743,7 +2385,7 @@ class SleepMetricsCalculator:
                 basic_metrics['time_in_bed_minutes']
             )
             
-            # 8. 构建睡眠数据字典
+            # 12. 构建睡眠数据字典
             sleep_data_dict = {
                 "date": date_str,
                 "bedtime": basic_metrics['bedtime'].strftime('%Y-%m-%d %H:%M:%S'),
@@ -1766,10 +2408,10 @@ class SleepMetricsCalculator:
                 "average_metrics": basic_metrics['avg_metrics']
             }
             
-            # 9. 计算睡眠评分
+            # 13. 计算睡眠评分
             sleep_data_dict['sleep_score'] = cls.calculate_sleep_score(sleep_data_dict)
             
-            # 10. 添加总结
+            # 14. 添加总结
             sleep_data_dict['summary'] = cls._generate_summary(sleep_data_dict['sleep_score'])
             
             return sleep_data_dict
@@ -1810,13 +2452,14 @@ def convert_numpy_types(obj):
         return obj
 
 
-def analyze_single_day_sleep_data(date_str: str, table_name: str = "vital_signs") -> str:
+def analyze_single_day_sleep_data(date_str: str, table_name: str = "vital_signs", sleep_staging_method: str = "ensemble") -> str:
     """
     分析单日睡眠数据
     
     Args:
         date_str: 日期字符串，格式如 '2024-12-20'
         table_name: 数据库表名，默认为 "vital_signs"
+        sleep_staging_method: 睡眠分期方法，可选值: "rule" (基于规则推理), "ensemble" (基于集成学习)
         
     Returns:
         JSON格式的睡眠分析结果
@@ -1874,7 +2517,7 @@ def analyze_single_day_sleep_data(date_str: str, table_name: str = "vital_signs"
             return response.to_json()
         
         # 分析睡眠指标
-        result = SleepMetricsCalculator.calculate_sleep_metrics(df, date_str)
+        result = SleepMetricsCalculator.calculate_sleep_metrics(df, date_str, sleep_staging_method)
         
         # 转换numpy类型
         result = convert_numpy_types(result)
@@ -1959,7 +2602,7 @@ def analyze_single_day_sleep_data(date_str: str, table_name: str = "vital_signs"
         return response.to_json()
 
 
-def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, table_name: str = "vital_signs") -> str:
+def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, table_name: str = "vital_signs", sleep_staging_method: str = "rule") -> str:
     """
     分析单日睡眠数据（带设备参数）
     
@@ -1967,6 +2610,7 @@ def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, tab
         date_str: 日期字符串，格式如 '2024-12-20'
         device_sn: 设备序列号
         table_name: 数据库表名，默认为 "vital_signs"
+        sleep_staging_method: 睡眠分期方法，可选值: "rule" (基于规则推理), "ensemble" (基于集成学习)
         
     Returns:
         JSON格式的睡眠分析结果
@@ -2026,7 +2670,7 @@ def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, tab
             return response.to_json()
         
         # 分析睡眠指标
-        result = SleepMetricsCalculator.calculate_sleep_metrics(df, date_str)
+        result = SleepMetricsCalculator.calculate_sleep_metrics(df, date_str, sleep_staging_method)
         result['device_sn'] = device_sn
         
         # 转换numpy类型
@@ -2115,7 +2759,7 @@ def analyze_single_day_sleep_data_with_device(date_str: str, device_sn: str, tab
 
 
 @tool
-def analyze_sleep_by_date(date: str, runtime: object = None, table_name: str = "vital_signs") -> str:
+def analyze_sleep_by_date(date: str, runtime: object = None, table_name: str = "vital_signs", sleep_staging_method: str = "ensemble") -> str:
     """
     根据指定日期分析睡眠数据
     
@@ -2123,8 +2767,9 @@ def analyze_sleep_by_date(date: str, runtime: object = None, table_name: str = "
         date: 日期字符串，格式如 '2024-12-20'
         runtime: ToolRuntime 运行时上下文
         table_name: 数据库表名，默认为 "vital_signs"
+        sleep_staging_method: 睡眠分期方法，可选值: "rule" (基于规则推理), "ensemble" (基于集成学习)
         
     Returns:
         JSON格式的睡眠分析结果
     """
-    return analyze_single_day_sleep_data(date, table_name)
+    return analyze_single_day_sleep_data(date, table_name, sleep_staging_method)

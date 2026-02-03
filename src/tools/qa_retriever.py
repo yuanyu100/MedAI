@@ -1,6 +1,7 @@
 import pandas as pd
 import json
 from datetime import datetime
+from langchain_community.tools import tool
 
 
 def parse_data_content(content: str):

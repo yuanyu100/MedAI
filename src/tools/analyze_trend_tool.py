@@ -140,17 +140,32 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                 day_name_cn = _get_chinese_weekday(date_obj.weekday())  # 中文周几
                 
                 # 构建当天数据
-                total_sleep = float(item.get('sleep_duration_minutes', 0) / 60)  # 转换为小时
+                total_sleep_minutes = float(item.get('sleep_duration_minutes', 0))
                 daily_data = {
                     "date": date_str,
                     "day": day_name,
                     "day_cn": day_name_cn,
-                    "total_sleep_hours": round(total_sleep, 2),  # 保留两位小数
+                    "total_sleep_hours": round(total_sleep_minutes / 60, 2),  # 保留两位小数
+                    "total_sleep_minutes": int(total_sleep_minutes),  # 转换为分钟
                     "sleep_score": int(item.get('sleep_score', 0)),
                     "deep_sleep_minutes": int(item.get('deep_sleep_minutes', 0)),
-                    "light_sleep_minutes": int(item.get('light_sleep_minutes', 0))
+                    "light_sleep_minutes": int(item.get('light_sleep_minutes', 0)),
+                    "rem_sleep_minutes": int(item.get('rem_sleep_minutes', 0)),
+                    "awake_minutes": int(item.get('awake_minutes', 0))
                 }
                 weekly_data.append(daily_data)
+            
+            # 计算平均值
+            total_sleep_sum = sum(item.get('total_sleep_minutes', 0) for item in weekly_data)
+            sleep_score_sum = sum(item.get('sleep_score', 0) for item in weekly_data)
+            valid_days = len([item for item in weekly_data if item.get('sleep_score', 0) > 0])
+            
+            avg_sleep_duration = 0
+            avg_sleep_score = 0
+            
+            if valid_days > 0:
+                avg_sleep_duration = total_sleep_sum / valid_days
+                avg_sleep_score = sleep_score_sum / valid_days
             
             # 构建返回结果
             result = {
@@ -159,7 +174,9 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                     "type": "week",
                     "start_date": start_date,
                     "end_date": end_date,
-                    "weekly_data": weekly_data
+                    "weekly_data": weekly_data,
+                    "average_sleep_duration_minutes": round(avg_sleep_duration, 1),
+                    "average_sleep_score": round(avg_sleep_score, 1)
                 }
             }
         else:  # month
@@ -210,14 +227,17 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                 if date_str in sleep_data_dict:
                     # 使用真实数据
                     item = sleep_data_dict[date_str]
-                    total_sleep = float(item.get('sleep_duration_minutes', 0) / 60)  # 转换为小时
+                    total_sleep_minutes = float(item.get('sleep_duration_minutes', 0))
                     daily_data = {
                         "date": date_str,
                         "day_of_month": int(day_of_month),
-                        "total_sleep_hours": round(total_sleep, 2),  # 保留两位小数
+                        "total_sleep_hours": round(total_sleep_minutes / 60, 2),  # 保留两位小数
+                        "total_sleep_minutes": int(total_sleep_minutes),  # 转换为分钟
                         "sleep_score": int(item.get('sleep_score', 0)),
                         "deep_sleep_minutes": int(item.get('deep_sleep_minutes', 0)),
-                        "light_sleep_minutes": int(item.get('light_sleep_minutes', 0))
+                        "light_sleep_minutes": int(item.get('light_sleep_minutes', 0)),
+                        "rem_sleep_minutes": int(item.get('rem_sleep_minutes', 0)),
+                        "awake_minutes": int(item.get('awake_minutes', 0))
                     }
                 else:
                     # 没有数据，用 0 填充
@@ -225,12 +245,27 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                         "date": date_str,
                         "day_of_month": int(day_of_month),
                         "total_sleep_hours": 0.0,
+                        "total_sleep_minutes": 0,
                         "sleep_score": 0,
                         "deep_sleep_minutes": 0,
-                        "light_sleep_minutes": 0
+                        "light_sleep_minutes": 0,
+                        "rem_sleep_minutes": 0,
+                        "awake_minutes": 0
                     }
                 
                 monthly_data.append(daily_data)
+            
+            # 计算平均值
+            total_sleep_sum = sum(item.get('total_sleep_minutes', 0) for item in monthly_data)
+            sleep_score_sum = sum(item.get('sleep_score', 0) for item in monthly_data)
+            valid_days = len([item for item in monthly_data if item.get('sleep_score', 0) > 0])
+            
+            avg_sleep_duration = 0
+            avg_sleep_score = 0
+            
+            if valid_days > 0:
+                avg_sleep_duration = total_sleep_sum / valid_days
+                avg_sleep_score = sleep_score_sum / valid_days
             
             # 构建返回结果
             result = {
@@ -239,7 +274,9 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                     "type": "month",
                     "start_date": start_date,
                     "end_date": end_date,
-                    "monthly_data": monthly_data
+                    "monthly_data": monthly_data,
+                    "average_sleep_duration_minutes": round(avg_sleep_duration, 1),
+                    "average_sleep_score": round(avg_sleep_score, 1)
                 }
             }
         

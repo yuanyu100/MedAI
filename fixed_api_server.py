@@ -11,12 +11,15 @@ import traceback
 from typing import Dict, Optional
 from contextlib import asynccontextmanager
 from langchain_community.tools import tool
-import schedule
+from fastapi import Body, Request
 import threading
 import time as time_module
 from collections import Counter
 import math
 import asyncio
+
+# 尝试导入schedule模块，如果失败则跳过定时任务
+# import schedule
 
 # 添加src目录到Python路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'src'))
@@ -214,6 +217,14 @@ class WeeklyOrMonthlyDataRequest(BaseModel):
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
 
 
+class WeeklyOrMonthlyAnalysisRequest(BaseModel):
+    """周/月分析请求模型（支持新旧格式）"""
+    data_type: Optional[str] = Field(None, description="数据类型：'week' 或 'month'", pattern="^(week|month)$")
+    summary_type: Optional[str] = Field(None, description="数据类型（旧格式）：'week' 或 'month'", pattern="^(week|month)$")
+    datetime: Optional[str] = Field(None, description="时间，格式如 '2024-12-20 14:30:00'，默认为当前时间")
+    device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+
+
 class AnalysisRequest(BaseModel):
     """数据分析请求模型"""
     file_path: str
@@ -245,6 +256,7 @@ class SleepAnalysisRequest(BaseModel):
     """睡眠分析请求模型"""
     date: str  # 日期格式 YYYY-MM-DD
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
+    sleep_staging_method: Optional[str] = "ensemble"  # 睡眠分期方法，可选值: "rule", "ensemble"
     # 移除table_name参数，硬编码为vital_signs
 
 
@@ -1181,42 +1193,20 @@ async def analyze_trend_data(request: PDFTrendRequest):
 async def analyze_sleep(request: SleepAnalysisRequest) -> SleepAnalysisResponseModel:
     """睡眠分析 - 使用Pydantic强类型校验返回结果"""
     try:
-        print(f"😴 睡眠分析: {request.date}, 设备: {request.device_sn}")
+        print(f"😴 睡眠分析: {request.date}, 设备: {request.device_sn}, 方法: {request.sleep_staging_method}")
         
-        # 首先尝试从数据库获取已存储的分析结果
-        from src.db.database import get_db_manager
-        db_manager = get_db_manager()
-        stored_data_raw = db_manager.get_calculated_sleep_data(request.date, request.device_sn)
+        # 不管数据库中是否有已存储的结果，都强制重新计算，以确保使用最新的算法
+        print("🔄 强制重新计算睡眠分析结果")
         
-        # 检查数据库是否有已存储的结果，并检查睡眠分析数据是否已填充
-        if not stored_data_raw.empty:
-            stored_record = stored_data_raw.to_dict('records')[0]
-            
-            # 检查bedtime是否不为None（哨兵字段，表示睡眠分析已执行）
-            # 如果bedtime为None，说明睡眠分析还没执行过，需要重新计算
-            if stored_record.get('bedtime') is not None:
-                # 从数据库读取并转换为Pydantic模型结构
-                # 获取sleep_stage_segments
-                segments_raw = db_manager.get_sleep_stage_segments(request.date, request.device_sn)
-                sleep_stage_segments = None
-                if not segments_raw.empty:
-                    sleep_stage_segments = segments_raw.to_dict('records')
-                
-                # 使用转换函数将平铺DB记录转换为嵌套Pydantic模型
-                data_model = transform_db_record_to_sleep_analysis(stored_record, sleep_stage_segments)
-                
-                return SleepAnalysisResponseModel(
-                    success=True,
-                    data=data_model
-                )
-        
-        # 数据库中没有数据，调用分析工具生成新数据
-        result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs")
+        # 调用分析工具生成新数据
+        result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs", request.sleep_staging_method)
         
         result_dict = json.loads(result)
         
         # 如果工具成功，存储结果到数据库
         if result_dict.get("success") and result_dict.get("data"):
+            from src.db.database import get_db_manager
+            db_manager = get_db_manager()
             db_manager.store_sleep_analysis_data(result_dict.get("data", {}))
         
         # 返回结果（工具函数已经返回正确的嵌套结构）
@@ -1763,25 +1753,36 @@ def generate_comprehensive_report(sleep_data: dict, physio_data: dict, date: str
 
 
 @app.post("/weeklyOrMonthly/analysis")
-async def weekly_or_monthly_analysis(request: SleepSummaryRequest):
+async def weekly_or_monthly_analysis(data_type: str = Body(..., description="数据类型：'week' 或 'month'"),
+                                     datetime: Optional[str] = Body(None, description="时间，格式如 '2024-12-20 14:30:00'，默认为当前时间"),
+                                     device_sn: Optional[str] = Body("210235C9KT3251000013", description="设备序列号（可选，默认值）")):
     """周度/月度分析（睡眠、心率、呼吸频率、呼吸暂停）"""
     try:
-        print(f"📋 周度/月度分析: {request.summary_type}, 设备: {request.device_sn}, 时间: {request.datetime}")
+        # 只使用data_type字段
+        device_sn = device_sn
+        datetime_str = datetime
+        
+        print(f"📋 周度/月度分析: {data_type}, 设备: {device_sn}, 时间: {datetime_str}")
         
         # 计算日期范围
         from datetime import datetime, timedelta
         
         # 使用请求中提供的时间或当前时间
-        if request.datetime:
+        if datetime_str:
             try:
-                base_date = datetime.strptime(request.datetime, '%Y-%m-%d %H:%M:%S')
+                # 尝试解析包含时分秒的格式
+                base_date = datetime.strptime(datetime_str, '%Y-%m-%d %H:%M:%S')
             except ValueError:
-                print(f"❌ 无效的时间格式: {request.datetime}，使用当前时间")
-                base_date = datetime.now()
+                try:
+                    # 尝试解析仅包含日期的格式
+                    base_date = datetime.strptime(datetime_str, '%Y-%m-%d')
+                except ValueError:
+                    print(f"❌ 无效的时间格式: {datetime_str}，使用当前时间")
+                    base_date = datetime.now()
         else:
             base_date = datetime.now()
         
-        if request.summary_type == 'week':
+        if data_type == 'week':
             # 自然周：周一到周日
             # 计算本周一
             days_since_monday = base_date.weekday()
@@ -1804,7 +1805,7 @@ async def weekly_or_monthly_analysis(request: SleepSummaryRequest):
         # 从数据库获取睡眠数据
         from src.db.database import get_db_manager
         db_manager = get_db_manager()
-        sleep_data = db_manager.get_calculated_sleep_data_for_date_range(start_date, end_date, request.device_sn)
+        sleep_data = db_manager.get_calculated_sleep_data_for_date_range(start_date, end_date, device_sn)
         
         if sleep_data.empty:
             return {
@@ -1865,38 +1866,65 @@ async def weekly_or_monthly_analysis(request: SleepSummaryRequest):
             sleep_data['apnea_count'] < recommended_apnea_max
         ])
         
-        # 生成AI总结
-        summary_parts = []
+        # 构建AI分析提示
+        period_type = "本周" if data_type == 'week' else "本月"
+        analysis_prompt = f"请分析以下{period_type}睡眠数据：平均睡眠时长{avg_sleep_duration:.1f}小时，平均心率{avg_heart_rate:.1f}次/分钟，平均呼吸频率{avg_respiratory_rate:.1f}次/分钟，平均呼吸暂停次数{avg_apnea_count:.1f}次。输出两条分析，每条20字左右。"
         
-        if avg_sleep_duration < recommended_sleep_min:
-            summary_parts.append("睡眠时长普遍不足，建议增加睡眠时间。")
-        elif avg_sleep_duration > recommended_sleep_max:
-            summary_parts.append("睡眠时长过长，建议适当调整作息时间。")
-        else:
-            summary_parts.append("睡眠时长适中。")
-        
-        if avg_heart_rate < recommended_hr_min:
-            summary_parts.append("心率偏低，建议咨询医生。")
-        elif avg_heart_rate > recommended_hr_max:
-            summary_parts.append("心率偏高，建议减少咖啡因摄入并适当运动。")
-        else:
-            summary_parts.append("心率正常。")
-        
-        if avg_respiratory_rate < recommended_rr_min:
-            summary_parts.append("呼吸频率偏低，建议咨询医生。")
-        elif avg_respiratory_rate > recommended_rr_max:
-            summary_parts.append("呼吸频率偏高，建议保持室内空气流通。")
-        else:
-            summary_parts.append("呼吸频率正常。")
-        
-        if avg_apnea_count >= recommended_apnea_max:
-            summary_parts.append("呼吸暂停次数较多，建议咨询医生进行进一步检查。")
-        else:
-            summary_parts.append("呼吸暂停次数在正常范围内。")
-        
-        # 构建完整的AI总结
-        period_type = "本周" if request.summary_type == 'week' else "本月"
-        ai_summary = f"{period_type}分析结果：" + " ".join(summary_parts)
+        # 调用AI接口获取分析
+        try:
+            from improved_agent import run_improved_agent
+            ai_result = run_improved_agent(
+                "2026-02-02",  # 使用当前日期
+                thread_id=f"weekly_monthly_analysis_{data_type}_{start_date}_{end_date}",
+                force_refresh=True,
+                include_formatted_time=False,
+                device_sn=device_sn,
+                custom_prompt=analysis_prompt
+            )
+            
+            # 处理AI返回的结果，确保只有两条，每条20字左右
+            ai_lines = ai_result.strip().split('\n')
+            # 过滤空行
+            ai_lines = [line.strip() for line in ai_lines if line.strip()]
+            # 取前两条
+            ai_analyses = ai_lines[:2]
+            # 如果不够两条，补充默认分析
+            if len(ai_analyses) < 2:
+                if avg_sleep_duration < recommended_sleep_min:
+                    ai_analyses.append("睡眠时长不足，建议增加睡眠时间")
+                elif avg_sleep_duration > recommended_sleep_max:
+                    ai_analyses.append("睡眠时长过长，建议调整作息")
+                else:
+                    ai_analyses.append("睡眠时长适中，保持良好作息")
+                
+                if avg_heart_rate < recommended_hr_min:
+                    ai_analyses.append("心率偏低，建议咨询医生")
+                elif avg_heart_rate > recommended_hr_max:
+                    ai_analyses.append("心率偏高，建议适当运动")
+                else:
+                    ai_analyses.append("心率正常，身体状态良好")
+            
+            # 构建AI总结
+            ai_summary = "\n".join(ai_analyses)
+        except Exception as e:
+            print(f"❌ 调用AI接口失败: {str(e)}")
+            # 如果AI调用失败，使用默认分析
+            ai_analyses = []
+            if avg_sleep_duration < recommended_sleep_min:
+                ai_analyses.append("睡眠时长不足，建议增加睡眠时间")
+            elif avg_sleep_duration > recommended_sleep_max:
+                ai_analyses.append("睡眠时长过长，建议调整作息")
+            else:
+                ai_analyses.append("睡眠时长适中，保持良好作息")
+            
+            if avg_heart_rate < recommended_hr_min:
+                ai_analyses.append("心率偏低，建议咨询医生")
+            elif avg_heart_rate > recommended_hr_max:
+                ai_analyses.append("心率偏高，建议适当运动")
+            else:
+                ai_analyses.append("心率正常，身体状态良好")
+            
+            ai_summary = "\n".join(ai_analyses)
         
         # 构建响应数据
         response_data = {
@@ -2026,9 +2054,14 @@ def run_scheduler():
 
 def start_server(host: str = "0.0.0.0", port: int = 8080, reload: bool = False):
     """启动API服务器"""
-    # 启动调度器作为后台线程
-    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
-    scheduler_thread.start()
+    # 尝试启动调度器作为后台线程
+    try:
+        import schedule
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        print("⏰ 调度器已启动，等待定时任务执行...")
+    except ImportError:
+        print("⚠️  跳过定时任务启动，因为schedule模块未安装")
     
     print(f"🌐 启动修复版API服务器在 {host}:{port}")
     import uvicorn

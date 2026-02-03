@@ -480,7 +480,7 @@ def get_cached_analysis(query: str, date: str):
         return None
 
 
-def run_improved_agent(date: str, thread_id: str = "default-session", force_refresh: bool = False, include_formatted_time: bool = False, formatted_time_input: str = None, config_file_path: str = None, device_sn: str = None):
+def run_improved_agent(date: str, thread_id: str = "default-session", force_refresh: bool = False, include_formatted_time: bool = False, formatted_time_input: str = None, config_file_path: str = None, device_sn: str = None, custom_prompt: str = None):
     """
     运行改进版智能体，支持缓存和结果保存
     """
@@ -489,9 +489,12 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
     print(f"Running improved agent for date: {date}")
     
     # 初始化query变量
-    query = f"请分析 {date} 的睡眠数据"
-    if device_sn:
-        query = f"[设备序列号: {device_sn}] {query}"
+    if custom_prompt:
+        query = custom_prompt
+    else:
+        query = f"请分析 {date} 的睡眠数据"
+        if device_sn:
+            query = f"[设备序列号: {device_sn}] {query}"
     
     # 初始化formatted_time_input变量，确保在整个函数作用域内可用
     formatted_time_input_local = formatted_time_input
