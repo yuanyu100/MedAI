@@ -390,7 +390,13 @@ class SleepStageAnalyzer:
                 j = i + 1
                 
                 while j < len(stages_sequence) and stages_sequence[j]['stage_value'] == current['stage_value']:
-                    current['time_interval'] += stages_sequence[j]['time_interval']
+                    # 确保时间间隔是整数类型，避免浮点数精度问题
+                    try:
+                        current_interval = int(round(float(current['time_interval'])))
+                        next_interval = int(round(float(stages_sequence[j]['time_interval'])))
+                        current['time_interval'] = current_interval + next_interval
+                    except:
+                        current['time_interval'] += stages_sequence[j]['time_interval']
                     j += 1
                 
                 merged_same_stages.append(current)
@@ -412,8 +418,15 @@ class SleepStageAnalyzer:
                 
                 if current['time_interval'] < min_duration_threshold:
                     # 当前阶段太短，合并到前一个阶段
-                    print(f"合并短阶段: {current['stage_label']} ({current['time_interval']:.1f}分钟) 到前一个阶段")
-                    result[-1]['time_interval'] += current['time_interval']
+                    try:
+                        # 确保时间间隔是整数类型，避免浮点数精度问题
+                        current_interval = int(round(float(current['time_interval'])))
+                        prev_interval = int(round(float(result[-1]['time_interval'])))
+                        result[-1]['time_interval'] = prev_interval + current_interval
+                        print(f"合并短阶段: {current['stage_label']} ({current_interval}分钟) 到前一个阶段")
+                    except:
+                        result[-1]['time_interval'] += current['time_interval']
+                        print(f"合并短阶段: {current['stage_label']} ({current['time_interval']:.1f}分钟) 到前一个阶段")
                 else:
                     # 当前阶段足够长，添加到结果中
                     print(f"添加阶段: {current['stage_label']} ({current['time_interval']:.1f}分钟)")
@@ -1139,14 +1152,20 @@ class SleepMetricsCalculator:
         if sleep_period_data.empty:
             return 0
         
-        # 判断睡眠状态
-        sleep_period_data['is_sleeping'] = (
-            (sleep_period_data['heart_rate'] >= SleepMetricsCalculator.MIN_HEART_RATE) &
-            (sleep_period_data['heart_rate'] <= 70) &
-            (sleep_period_data['respiratory_rate'] >= 12) &
-            (sleep_period_data['respiratory_rate'] <= 18) &
-            (sleep_period_data['body_moves_ratio'] <= 10)
-        )
+        # 检查是否有睡眠阶段数据
+        if 'stage_value' in sleep_period_data.columns:
+            # 使用睡眠分期结果来计算睡眠时长
+            # 睡眠阶段值：1=深睡, 2=浅睡, 3=眼动, 4=清醒
+            sleep_period_data['is_sleeping'] = sleep_period_data['stage_value'].isin([1, 2, 3])
+        else:
+            # 如果没有睡眠阶段数据，使用生理指标判断
+            sleep_period_data['is_sleeping'] = (
+                (sleep_period_data['heart_rate'] >= SleepMetricsCalculator.MIN_HEART_RATE) &
+                (sleep_period_data['heart_rate'] <= 75) &  # 从70调整到75，更宽松
+                (sleep_period_data['respiratory_rate'] >= 10) &  # 从12调整到10，更宽松
+                (sleep_period_data['respiratory_rate'] <= 20) &  # 从18调整到20，更宽松
+                (sleep_period_data['body_moves_ratio'] <= 15)  # 从10调整到15，更宽松
+            )
         
         # 计算睡眠时长
         if len(sleep_period_data) == 1:
@@ -1805,14 +1824,37 @@ class SleepMetricsCalculator:
             print(f"分析器返回的阶段值: {analyzed_data['stage_value'].unique()}")
             
             # 确保 analyzed_data 的索引和 sleep_data 的索引匹配
-            # 首先创建一个字典，将 upload_time 映射到 stage_value
-            stage_map = dict(zip(analyzed_data['upload_time'], analyzed_data['stage_value']))
+            # 首先创建一个字典，将 upload_time 映射到 stage_value，确保值都是整数类型
+            stage_map = {}
+            for time, value in zip(analyzed_data['upload_time'], analyzed_data['stage_value']):
+                try:
+                    # 确保值都是整数类型，避免浮点数精度问题
+                    if isinstance(value, (int, float)):
+                        stage_map[time] = int(round(value))
+                    elif not pd.isna(value):
+                        stage_map[time] = int(round(float(value)))
+                    else:
+                        stage_map[time] = 0
+                except:
+                    stage_map[time] = 0
             
             # 然后使用这个字典来填充 sleep_data['stage_value']
             sleep_data['stage_value'] = sleep_data['upload_time'].map(stage_map)
             
             # 应用阶段映射
-            sleep_data['stage_value'] = sleep_data['stage_value'].map(stage_mapping).fillna(4).astype(int)
+            sleep_data['stage_value'] = sleep_data['stage_value'].map(stage_mapping).fillna(4)
+            # 确保所有值都是整数类型，避免浮点数精度问题
+            def safe_int_conversion(x):
+                try:
+                    if isinstance(x, (int, float)):
+                        return int(round(x))
+                    elif not pd.isna(x):
+                        return int(round(float(x)))
+                    else:
+                        return 4
+                except:
+                    return 4
+            sleep_data['stage_value'] = sleep_data['stage_value'].apply(safe_int_conversion)
             
             # 打印映射后的阶段分布
             print(f"\n=== 调试信息: 映射后的阶段分布 ===")
@@ -1823,9 +1865,13 @@ class SleepMetricsCalculator:
             
             # 计算时间间隔
             time_diffs = sleep_data['upload_time'].diff().dt.total_seconds() / 60
-            time_intervals = time_diffs.fillna(0).clip(lower=1)
+            # 确保时间间隔是整数，避免浮点数精度问题
+            time_intervals = time_diffs.fillna(0).apply(lambda x: max(1, int(round(x))))
             if len(time_intervals) > 1:
-                time_intervals.iloc[0] = time_intervals.iloc[1]
+                try:
+                    time_intervals.iloc[0] = time_intervals.iloc[1]
+                except:
+                    time_intervals.iloc[0] = 1
             else:
                 time_intervals.iloc[0] = 1
             
@@ -1834,15 +1880,28 @@ class SleepMetricsCalculator:
             for idx, row in sleep_data.iterrows():
                 try:
                     # 确保 stage_value 是整数
-                    stage_value = int(row['stage_value']) if not pd.isna(row['stage_value']) else 4
+                    if isinstance(row['stage_value'], (int, float)):
+                        stage_value = int(round(row['stage_value']))
+                    elif not pd.isna(row['stage_value']):
+                        stage_value = int(row['stage_value'])
+                    else:
+                        stage_value = 4
                 except:
                     stage_value = 4  # 默认值为清醒
+                
+                # 确保 time_interval 是数值类型
+                try:
+                    time_interval = time_intervals.iloc[idx] if idx < len(time_intervals) else 1
+                    if not isinstance(time_interval, (int, float)):
+                        time_interval = float(time_interval)
+                except:
+                    time_interval = 1
                 
                 stages_sequence.append({
                     'stage_value': stage_value,
                     'stage_label': row['stage_label'],
                     'time': row['upload_time'],
-                    'time_interval': time_intervals.iloc[idx] if idx < len(time_intervals) else 1
+                    'time_interval': time_interval
                 })
             
             # 打印原始阶段序列，查看平滑前的阶段分布
@@ -1868,8 +1927,41 @@ class SleepMetricsCalculator:
             # 计算各阶段时长和生成阶段片段
             cls._process_sleep_stages(smoothed_stages, result)
             
+            # 手动计算睡眠阶段时长，确保结果正确
+            print(f"\n=== 调试信息: 手动计算睡眠阶段时长 ===")
+            total_deep = 0
+            total_light = 0
+            total_rem = 0
+            total_awake = 0
+            
+            for stage in smoothed_stages:
+                try:
+                    duration = float(stage['time_interval'])
+                    if stage['stage_value'] == 1:
+                        total_deep += duration
+                    elif stage['stage_value'] == 2:
+                        total_light += duration
+                    elif stage['stage_value'] == 3:
+                        total_rem += duration
+                    elif stage['stage_value'] == 4:
+                        total_awake += duration
+                except:
+                    pass
+            
+            print(f"手动计算的深睡时长: {total_deep:.2f} 分钟")
+            print(f"手动计算的浅睡时长: {total_light:.2f} 分钟")
+            print(f"手动计算的REM时长: {total_rem:.2f} 分钟")
+            print(f"手动计算的清醒时长: {total_awake:.2f} 分钟")
+            
+            # 更新结果
+            result['deep_sleep_duration'] = total_deep
+            result['light_sleep_duration'] = total_light
+            result['rem_sleep_duration'] = total_rem
+            result['awake_duration'] = total_awake
+            
         except Exception as e:
             logger.error(f"计算睡眠阶段时出错: {str(e)}")
+            print(f"计算睡眠阶段时出错: {str(e)}")
         
         return result
     
@@ -1891,6 +1983,20 @@ class SleepMetricsCalculator:
             stage_value = stage_info['stage_value']
             time_interval = stage_info['time_interval']
             stage_time = stage_info.get('time')
+            
+            # 确保 stage_value 是整数类型
+            if not isinstance(stage_value, int):
+                try:
+                    stage_value = int(round(float(stage_value)))
+                except:
+                    stage_value = 4
+            
+            # 确保 time_interval 是整数类型，避免浮点数精度问题
+            if not isinstance(time_interval, int):
+                try:
+                    time_interval = int(round(float(time_interval)))
+                except:
+                    time_interval = 1
             
             if current_stage != stage_value:
                 if current_stage is not None:
@@ -1933,7 +2039,7 @@ class SleepMetricsCalculator:
                     # 添加当前阶段到结果
                     result['sleep_stage_segments'].append({
                         "label": SleepStageAnalyzer.get_stage_label(current_stage),
-                        "value": str(int(current_stage_duration)),
+                        "value": str(int(round(current_stage_duration))),
                         "start_time": start_time_str,
                         "end_time": end_time_str
                     })
@@ -1980,7 +2086,7 @@ class SleepMetricsCalculator:
             
             result['sleep_stage_segments'].append({
                 "label": SleepStageAnalyzer.get_stage_label(current_stage),
-                "value": str(int(current_stage_duration)),
+                "value": str(int(round(current_stage_duration))),
                 "start_time": start_time_str,
                 "end_time": end_time_str
             })
@@ -2025,6 +2131,17 @@ class SleepMetricsCalculator:
         total_sleep_phases = total_sleep_time + awake_duration
         time_in_bed_minutes_total = time_in_bed_minutes
         
+        # 打印调试信息
+        print(f"\n=== 调试信息: _calculate_sleep_phase_ratios ===")
+        print(f"输入的睡眠时长: {sleep_duration_minutes:.2f} 分钟")
+        print(f"深睡时长: {deep_sleep_duration:.2f} 分钟")
+        print(f"浅睡时长: {light_sleep_duration:.2f} 分钟")
+        print(f"REM时长: {rem_sleep_duration:.2f} 分钟")
+        print(f"清醒时长: {awake_duration:.2f} 分钟")
+        print(f"卧床时间: {time_in_bed_minutes_total:.2f} 分钟")
+        print(f"计算的总睡眠时长: {total_sleep_time:.2f} 分钟")
+        print(f"计算的总睡眠阶段时长: {total_sleep_phases:.2f} 分钟")
+        
         if total_sleep_phases > time_in_bed_minutes_total:
             if total_sleep_phases > 0:
                 adjustment_factor = time_in_bed_minutes_total / total_sleep_phases
@@ -2034,9 +2151,12 @@ class SleepMetricsCalculator:
                 awake_duration *= adjustment_factor
                 # 睡眠时长应该是调整后的深睡+浅睡+REM时长
                 sleep_duration_minutes = deep_sleep_duration + light_sleep_duration + rem_sleep_duration
+                print(f"调整因子: {adjustment_factor:.2f}")
+                print(f"调整后的睡眠时长: {sleep_duration_minutes:.2f} 分钟")
         else:
             # 直接使用原始的睡眠时长
             sleep_duration_minutes = total_sleep_time
+            print(f"使用原始睡眠时长: {sleep_duration_minutes:.2f} 分钟")
         
         # 计算各阶段占比
         if sleep_duration_minutes > 0:
@@ -2045,12 +2165,18 @@ class SleepMetricsCalculator:
             rem_sleep_ratio = (rem_sleep_duration / sleep_duration_minutes) * 100
             # 清醒时长占比应该基于卧床时间，而不是睡眠时长
             awake_ratio = (awake_duration / time_in_bed_minutes_total) * 100 if time_in_bed_minutes_total > 0 else 0
+            print(f"深睡占比: {deep_sleep_ratio:.2f}%")
+            print(f"浅睡占比: {light_sleep_ratio:.2f}%")
+            print(f"REM占比: {rem_sleep_ratio:.2f}%")
+            print(f"清醒占比: {awake_ratio:.2f}%")
         else:
             if time_in_bed_minutes > 0:
                 awake_ratio = 100
                 deep_sleep_ratio = light_sleep_ratio = rem_sleep_ratio = 0
+                print("警告: 睡眠时长为0，设置清醒占比为100%")
             else:
                 deep_sleep_ratio = light_sleep_ratio = rem_sleep_ratio = awake_ratio = 0
+                print("警告: 睡眠时长和卧床时间都为0")
         
         # 确保各比例不超过100%
         deep_sleep_ratio = min(deep_sleep_ratio, 100)
