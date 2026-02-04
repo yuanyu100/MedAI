@@ -256,7 +256,7 @@ class SleepAnalysisRequest(BaseModel):
     """睡眠分析请求模型"""
     date: str  # 日期格式 YYYY-MM-DD
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
-    sleep_staging_method: Optional[str] = "ensemble"  # 睡眠分期方法，可选值: "rule", "ensemble"
+    # 移除sleep_staging_method参数，硬编码为"rule"
     # 移除table_name参数，硬编码为vital_signs
 
 
@@ -1193,13 +1193,15 @@ async def analyze_trend_data(request: PDFTrendRequest):
 async def analyze_sleep(request: SleepAnalysisRequest) -> SleepAnalysisResponseModel:
     """睡眠分析 - 使用Pydantic强类型校验返回结果"""
     try:
-        print(f"😴 睡眠分析: {request.date}, 设备: {request.device_sn}, 方法: {request.sleep_staging_method}")
+        # 硬编码睡眠分期方法为"rule"
+        sleep_staging_method = "rule"
+        print(f"😴 睡眠分析: {request.date}, 设备: {request.device_sn}, 方法: {sleep_staging_method}")
         
         # 不管数据库中是否有已存储的结果，都强制重新计算，以确保使用最新的算法
         print("🔄 强制重新计算睡眠分析结果")
         
         # 调用分析工具生成新数据
-        result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs", request.sleep_staging_method)
+        result = analyze_single_day_sleep_data_with_device(request.date, request.device_sn, "vital_signs", sleep_staging_method)
         
         result_dict = json.loads(result)
         
@@ -2077,7 +2079,7 @@ if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="启动修复版智能体API服务器")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="服务器主机地址")
-    parser.add_argument("-p", "--port", type=int, default=9002, help="服务器端口")
+    parser.add_argument("-p", "--port", type=int, default=9001, help="服务器端口")
     parser.add_argument("--reload", action="store_true", help="启用热重载模式")
     
     args = parser.parse_args()

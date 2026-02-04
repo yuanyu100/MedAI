@@ -1630,10 +1630,41 @@ class SleepMetricsCalculator:
                         print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
                         break
                 
-                # 如果没有找到心率下降的时间点，使用默认值
+                # 如果没有找到心率下降的时间点，基于心率最高值计算
                 if sleep_prep_time == 0:
-                    print("\n未找到心率下降时间点，使用默认睡眠准备时间")
-                    sleep_prep_time = 360  # 默认6小时，用户1-2点入睡
+                    print("\n未找到心率下降时间点，基于心率最高值计算睡眠准备时间")
+                    if hourly_hr_data:
+                        # 找到心率最高值的时间点
+                        max_hr_info = max(hourly_hr_data, key=lambda x: x['avg_hr'])
+                        print(f"找到心率最高值: {max_hr_info['avg_hr']:.2f} 次/分, 时间范围: {max_hr_info['start_time']} - {max_hr_info['end_time']}")
+                        
+                        # 从最高值之后查找心率开始下降的时间点
+                        max_hr_index = next((i for i, info in enumerate(hourly_hr_data) if info['hour'] == max_hr_info['hour']), -1)
+                        if max_hr_index != -1 and max_hr_index < len(hourly_hr_data) - 1:
+                            # 从最高值之后开始查找
+                            for i in range(max_hr_index + 1, len(hourly_hr_data)):
+                                current_hr = hourly_hr_data[i]['avg_hr']
+                                # 如果心率比最高值下降了5%以上，认为开始入睡
+                                if current_hr <= max_hr_info['avg_hr'] * 0.95:
+                                    sleep_start_time = hourly_hr_data[i]['start_time']
+                                    sleep_prep_time = (sleep_start_time - bedtime).total_seconds() / 60
+                                    print(f"找到心率开始下降的时间点: {sleep_start_time}")
+                                    print(f"基于心率最高值计算的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+                                    break
+                        
+                        # 如果仍然没有找到，使用心率最高值之后2小时作为睡眠开始时间
+                        if sleep_prep_time == 0:
+                            sleep_start_time = max_hr_info['end_time'] + timedelta(hours=1)
+                            sleep_prep_time = (sleep_start_time - bedtime).total_seconds() / 60
+                            print(f"未找到明显的心率下降，使用心率最高值之后2小时作为睡眠开始时间")
+                            print(f"计算得到的睡眠准备时间: {sleep_prep_time:.2f} 分钟")
+                    else:
+                        # 如果没有每小时心率数据，使用默认值，但不超过实际卧床时间
+                        print("无每小时心率数据，使用默认睡眠准备时间")
+                        # 计算实际卧床时间
+                        actual_bed_time = (sleep_period_data['upload_time'].max() - sleep_period_data['upload_time'].min()).total_seconds() / 60
+                        # 使用默认值但不超过实际卧床时间
+                        sleep_prep_time = min(180, actual_bed_time)  # 默认3小时，但不超过实际卧床时间
             elif stable_indices.empty:
                 # 如果没有找到稳定点，检查前60分钟的体动情况
                 first_hour_data = sleep_period_data[
@@ -2378,7 +2409,10 @@ class SleepMetricsCalculator:
                     sleep_prep_time = basic_metrics['sleep_prep_time_minutes']
             
             # 确保睡眠准备时间合理
-            sleep_prep_time = max(0, sleep_prep_time)  # 确保不为负数
+            # 计算实际卧床时间
+            actual_bed_time = (sleep_period_data['upload_time'].max() - sleep_period_data['upload_time'].min()).total_seconds() / 60
+            # 确保睡眠准备时间不为负数且不超过实际卧床时间
+            sleep_prep_time = max(0, min(sleep_prep_time, actual_bed_time))
             # 相应调整实际入睡时间
             actual_sleep_start_time = basic_metrics['bedtime'] + timedelta(minutes=sleep_prep_time)
             
@@ -2419,7 +2453,7 @@ class SleepMetricsCalculator:
             print(f"实际入睡时间: {actual_sleep_start_time}")
             print(f"起床时间: {basic_metrics['wakeup_time']}")
             
-            # 提取从实际入睡时间开始的数据
+            # 提取从实际入睡时间开始的数据，确保睡眠分期从准备入睡时间之后开始
             sleep_period_data = df[(df['upload_time'] >= actual_sleep_start_time) & 
                                   (df['upload_time'] <= basic_metrics['wakeup_time'])].copy()
             
@@ -2511,6 +2545,89 @@ class SleepMetricsCalculator:
                 basic_metrics['time_in_bed_minutes']
             )
             
+            # 处理睡眠阶段截断，确保所有阶段都不超过wakeup_time
+            wakeup_time = basic_metrics['wakeup_time']
+            truncated_segments = []
+            total_awake = 0
+            total_deep = 0
+            total_light = 0
+            total_rem = 0
+            
+            for segment in sleep_phases_data['sleep_stage_segments']:
+                # 解析开始和结束时间
+                start_time_str = segment.get('start_time')
+                end_time_str = segment.get('end_time')
+                
+                if start_time_str and end_time_str:
+                    try:
+                        start_time = datetime.fromisoformat(start_time_str.replace(' ', 'T'))
+                        end_time = datetime.fromisoformat(end_time_str.replace(' ', 'T'))
+                        
+                        # 检查结束时间是否超过wakeup_time
+                        if end_time > wakeup_time:
+                            # 截断到wakeup_time
+                            truncated_end_time = wakeup_time
+                            # 计算截断后的持续时间
+                            original_duration = int(segment.get('value', 0))
+                            truncated_duration = (truncated_end_time - start_time).total_seconds() / 60
+                            
+                            # 更新阶段信息
+                            truncated_segment = segment.copy()
+                            truncated_segment['end_time'] = truncated_end_time.strftime('%Y-%m-%d %H:%M:%S')
+                            truncated_segment['value'] = str(int(round(truncated_duration)))
+                            
+                            truncated_segments.append(truncated_segment)
+                            
+                            # 更新各阶段时长
+                            label = segment.get('label')
+                            if label == "清醒":
+                                total_awake += truncated_duration
+                            elif label == "深睡":
+                                total_deep += truncated_duration
+                            elif label == "浅睡":
+                                total_light += truncated_duration
+                            elif label == "眼动":
+                                total_rem += truncated_duration
+                        else:
+                            # 结束时间未超过wakeup_time，直接添加
+                            truncated_segments.append(segment)
+                            
+                            # 更新各阶段时长
+                            label = segment.get('label')
+                            duration = int(segment.get('value', 0))
+                            if label == "清醒":
+                                total_awake += duration
+                            elif label == "深睡":
+                                total_deep += duration
+                            elif label == "浅睡":
+                                total_light += duration
+                            elif label == "眼动":
+                                total_rem += duration
+                    except:
+                        # 解析时间出错，直接添加
+                        truncated_segments.append(segment)
+                else:
+                    # 缺少时间信息，直接添加
+                    truncated_segments.append(segment)
+            
+            # 更新睡眠阶段数据
+            sleep_phases_data['sleep_stage_segments'] = truncated_segments
+            sleep_phases_data['awake_duration'] = total_awake
+            sleep_phases_data['deep_sleep_duration'] = total_deep
+            sleep_phases_data['light_sleep_duration'] = total_light
+            sleep_phases_data['rem_sleep_duration'] = total_rem
+            
+            # 重新计算睡眠阶段占比
+            actual_sleep_duration = total_deep + total_light + total_rem
+            phase_ratios = cls._calculate_sleep_phase_ratios(
+                actual_sleep_duration,
+                total_deep,
+                total_light,
+                total_rem,
+                total_awake,
+                basic_metrics['time_in_bed_minutes']
+            )
+            
             # 12. 构建睡眠数据字典
             sleep_data_dict = {
                 "date": date_str,
@@ -2530,7 +2647,7 @@ class SleepMetricsCalculator:
                     "rem_sleep_percentage": round(phase_ratios['rem_sleep_ratio'], 2),
                     "awake_percentage": round(phase_ratios['awake_ratio'], 2)
                 },
-                "sleep_stage_segments": sleep_phases_data['sleep_stage_segments'],
+                "sleep_stage_segments": truncated_segments,
                 "average_metrics": basic_metrics['avg_metrics']
             }
             
