@@ -12,8 +12,7 @@ from typing import Dict, List, Tuple, Optional
 import warnings
 from langchain_community.tools import tool
 
-# 导入高级睡眠分期分析器
-from .advanced_sleep_stage_analyzer import AdvancedSleepStageAnalyzer
+
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
@@ -1805,50 +1804,33 @@ class SleepMetricsCalculator:
             # 导入所需的分析器
             from .rule_based_sleep_stage_analyzer import RuleBasedSleepStageAnalyzer
             
-            # 根据选择的方法进行睡眠分期
-            if sleep_staging_method == "rule":
-                # 使用基于规则推理的方法
-                print(f"\n=== 调试信息: 调用 RuleBasedSleepStageAnalyzer ===")
-                print(f"输入数据行数: {len(sleep_data)}")
-                print(f"输入时间范围: {sleep_data['upload_time'].min()} 到 {sleep_data['upload_time'].max()}")
-                
-                rule_analyzer = RuleBasedSleepStageAnalyzer()
-                analyzed_data = rule_analyzer.analyze_sleep_stages_by_rules(sleep_data)
-                
-                print(f"\n=== 调试信息: RuleBasedSleepStageAnalyzer 结果 ===")
-                print(f"分析后数据行数: {len(analyzed_data)}")
-                if not analyzed_data.empty:
-                    print(f"分析后阶段分布:")
-                    stage_counts = analyzed_data['stage_value'].value_counts()
-                    for stage, count in stage_counts.items():
-                        print(f"阶段 {stage} ({rule_analyzer.get_stage_label(stage)}): {count} 条")
-                
-                # 规则推理分析器: 0=清醒, 1=N1, 2=N2, 3=N3, 4=REM
-                # 当前系统: 1=深睡, 2=浅睡, 3=眼动, 4=清醒
-                stage_mapping = {
-                    0: 4,  # 清醒 → 清醒
-                    1: 2,  # N1 → 浅睡
-                    2: 2,  # N2 → 浅睡
-                    3: 1,  # N3 → 深睡
-                    4: 3   # REM → 眼动
-                }
-                print(f"\n=== 调试信息: 阶段映射 ===")
-                print(stage_mapping)
-            else:
-                # 使用基于集成学习的方法
-                print(f"\n=== 调试信息: 调用 AdvancedSleepStageAnalyzer ===")
-                advanced_analyzer = AdvancedSleepStageAnalyzer()
-                analyzed_data = advanced_analyzer.analyze_sleep_stages_by_ensemble_learning(sleep_data)
-                
-                # 高级分析器: 0=清醒, 1=N1, 2=N2, 3=N3, 4=REM
-                # 当前系统: 1=深睡, 2=浅睡, 3=眼动, 4=清醒
-                stage_mapping = {
-                    0: 4,  # 清醒 → 清醒
-                    1: 2,  # N1 → 浅睡
-                    2: 2,  # N2 → 浅睡
-                    3: 1,  # N3 → 深睡
-                    4: 3   # REM → 眼动
-                }
+            # 使用基于规则推理的方法（默认方法，不使用机器学习）
+            print(f"\n=== 调试信息: 调用 RuleBasedSleepStageAnalyzer ===")
+            print(f"输入数据行数: {len(sleep_data)}")
+            print(f"输入时间范围: {sleep_data['upload_time'].min()} 到 {sleep_data['upload_time'].max()}")
+            
+            rule_analyzer = RuleBasedSleepStageAnalyzer()
+            analyzed_data = rule_analyzer.analyze_sleep_stages_by_rules(sleep_data)
+            
+            print(f"\n=== 调试信息: RuleBasedSleepStageAnalyzer 结果 ===")
+            print(f"分析后数据行数: {len(analyzed_data)}")
+            if not analyzed_data.empty:
+                print(f"分析后阶段分布:")
+                stage_counts = analyzed_data['stage_value'].value_counts()
+                for stage, count in stage_counts.items():
+                    print(f"阶段 {stage} ({rule_analyzer.get_stage_label(stage)}): {count} 条")
+            
+            # 规则推理分析器: 0=清醒, 1=N1, 2=N2, 3=N3, 4=REM
+            # 当前系统: 1=深睡, 2=浅睡, 3=眼动, 4=清醒
+            stage_mapping = {
+                0: 4,  # 清醒 → 清醒
+                1: 2,  # N1 → 浅睡
+                2: 2,  # N2 → 浅睡
+                3: 1,  # N3 → 深睡
+                4: 3   # REM → 眼动
+            }
+            print(f"\n=== 调试信息: 阶段映射 ===")
+            print(stage_mapping)
             
             # 打印分析器返回的原始阶段值，查看映射前的阶段分布
             print(f"\n=== 调试信息: 映射前的阶段分布 ===")

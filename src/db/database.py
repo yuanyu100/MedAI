@@ -896,6 +896,77 @@ class DatabaseManager:
         except Exception as e:
             # 如果查询失败，返回空 DataFrame
             return pd.DataFrame()
+
+    def create_weekly_monthly_analysis_table(self):
+        """创建用于存储周/月度分析总结的表"""
+        create_table_sql = """
+        CREATE TABLE IF NOT EXISTS weekly_monthly_analysis (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            analysis_type VARCHAR(10) NOT NULL COMMENT '分析类型：week或month',
+            start_date DATE NOT NULL COMMENT '开始日期',
+            end_date DATE NOT NULL COMMENT '结束日期',
+            device_sn VARCHAR(100) COMMENT '设备序列号',
+            ai_summary TEXT COMMENT 'AI分析总结（HTML格式）',
+            analysis_result JSON COMMENT '分析结果',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+            UNIQUE KEY uk_type_date_device (analysis_type, start_date, end_date, device_sn)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        """
+        self.execute_command(create_table_sql)
+
+    def store_weekly_monthly_analysis(self, analysis_type: str, start_date: str, end_date: str, device_sn: str, ai_summary: str, analysis_result: dict):
+        """存储周/月度分析总结"""
+        # 首先创建表（如果不存在）
+        self.create_weekly_monthly_analysis_table()
+        
+        # 准备插入数据
+        insert_sql = """
+        INSERT INTO weekly_monthly_analysis (
+            analysis_type, start_date, end_date, device_sn, 
+            ai_summary, analysis_result
+        ) VALUES (
+            :analysis_type, :start_date, :end_date, :device_sn, 
+            :ai_summary, :analysis_result
+        )
+        ON DUPLICATE KEY UPDATE
+            ai_summary = VALUES(ai_summary),
+            analysis_result = VALUES(analysis_result),
+            updated_at = CURRENT_TIMESTAMP
+        """
+        
+        params = {
+            'analysis_type': analysis_type,
+            'start_date': start_date,
+            'end_date': end_date,
+            'device_sn': device_sn,
+            'ai_summary': ai_summary,
+            'analysis_result': json.dumps(analysis_result, ensure_ascii=False)
+        }
+        
+        self.execute_command(insert_sql, params)
+
+    def get_weekly_monthly_analysis(self, analysis_type: str, start_date: str, end_date: str, device_sn: str):
+        """获取周/月度分析总结"""
+        # 首先确保表存在
+        self.create_weekly_monthly_analysis_table()
+        
+        query = """
+        SELECT * FROM weekly_monthly_analysis 
+        WHERE analysis_type = :analysis_type 
+        AND start_date = :start_date 
+        AND end_date = :end_date 
+        AND device_sn = :device_sn
+        """
+        params = {
+            'analysis_type': analysis_type,
+            'start_date': start_date,
+            'end_date': end_date,
+            'device_sn': device_sn
+        }
+        
+        result = self.execute_query(query, params)
+        return result
         
 
 # 全局数据库管理器实例

@@ -225,6 +225,38 @@ class WeeklyOrMonthlyAnalysisRequest(BaseModel):
     device_sn: Optional[str] = "210235C9KT3251000013"  # 设备序列号（可选，默认值）
 
 
+class MetricAnalysis(BaseModel):
+    """各项指标的分析结果模型"""
+    average: str
+    compliant_days: int
+    recommended_range: str
+
+
+class AnalysisResult(BaseModel):
+    """分析结果模型"""
+    sleep_duration: Optional[MetricAnalysis] = None
+    heart_rate: Optional[MetricAnalysis] = None
+    respiratory_rate: Optional[MetricAnalysis] = None
+    apnea: Optional[MetricAnalysis] = None
+
+
+class WeeklyMonthlyAnalysisData(BaseModel):
+    """周/月分析数据模型"""
+    ai_summary: str
+    analysis_result: Optional[AnalysisResult] = None
+    statistical_period: str
+    total_days: int
+    message: Optional[str] = None
+
+
+class WeeklyMonthlyAnalysisResponse(BaseModel):
+    """周/月分析响应模型"""
+    success: bool
+    data: Optional[WeeklyMonthlyAnalysisData] = None
+    has_data: bool
+    error: Optional[str] = None
+
+
 class AnalysisRequest(BaseModel):
     """数据分析请求模型"""
     file_path: str
@@ -1807,18 +1839,31 @@ async def weekly_or_monthly_analysis(data_type: str = Body(..., description="数
         # 从数据库获取睡眠数据
         from src.db.database import get_db_manager
         db_manager = get_db_manager()
+        
+        # 从数据库获取睡眠数据
         sleep_data = db_manager.get_calculated_sleep_data_for_date_range(start_date, end_date, device_sn)
         
         if sleep_data.empty:
-            return {
-                "success": True,
-                "data": {
-                    "ai_summary": "暂无足够数据生成总结",
-                    "分析结果": "无数据",
-                    "message": "当前日期范围内没有可用的睡眠数据"
-                },
-                "has_data": False
-            }
+            # 构建空数据时的 HTML 格式总结
+            ai_summary_html = "<div>"
+            ai_summary_html += "<h3>分析总结</h3>"
+            ai_summary_html += "<p>暂无足够数据生成总结</p>"
+            ai_summary_html += "</div>"
+            
+            # 构建响应数据
+            data = WeeklyMonthlyAnalysisData(
+                ai_summary=ai_summary_html,
+                analysis_result=None,
+                statistical_period=f"{start_date} 至 {end_date}",
+                total_days=0,
+                message="当前日期范围内没有可用的睡眠数据"
+            )
+            
+            return WeeklyMonthlyAnalysisResponse(
+                success=True,
+                data=data,
+                has_data=False
+            )
         
         # 计算各项指标的平均值
         # 睡眠时长（小时）
@@ -1881,7 +1926,8 @@ async def weekly_or_monthly_analysis(data_type: str = Body(..., description="数
                 force_refresh=True,
                 include_formatted_time=False,
                 device_sn=device_sn,
-                custom_prompt=analysis_prompt
+                custom_prompt=analysis_prompt,
+                save_to_database=False
             )
             
             # 处理AI返回的结果，确保只有两条，每条20字左右
@@ -1906,8 +1952,15 @@ async def weekly_or_monthly_analysis(data_type: str = Body(..., description="数
                 else:
                     ai_analyses.append("心率正常，身体状态良好")
             
-            # 构建AI总结
-            ai_summary = "\n".join(ai_analyses)
+            # 构建AI总结（HTML格式，仅使用基本标签）
+            ai_summary_html = "<div>"
+            ai_summary_html += "<h3>分析总结</h3>"
+            ai_summary_html += "<ul>"
+            for analysis in ai_analyses:
+                ai_summary_html += f"<li>{analysis}</li>"
+            ai_summary_html += "</ul>"
+            ai_summary_html += "</div>"
+            ai_summary = ai_summary_html
         except Exception as e:
             print(f"❌ 调用AI接口失败: {str(e)}")
             # 如果AI调用失败，使用默认分析
@@ -1926,52 +1979,112 @@ async def weekly_or_monthly_analysis(data_type: str = Body(..., description="数
             else:
                 ai_analyses.append("心率正常，身体状态良好")
             
-            ai_summary = "\n".join(ai_analyses)
+            # 构建AI总结（HTML格式，仅使用基本标签）
+            ai_summary_html = "<div>"
+            ai_summary_html += "<h3>分析总结</h3>"
+            ai_summary_html += "<ul>"
+            for analysis in ai_analyses:
+                ai_summary_html += f"<li>{analysis}</li>"
+            ai_summary_html += "</ul>"
+            ai_summary_html += "</div>"
+            ai_summary = ai_summary_html
         
         # 构建响应数据
-        response_data = {
-            "ai_summary": ai_summary,
-            "分析结果": {
-                "睡眠时长": {
-                    "平均值": f"{avg_sleep_duration:.1f} 小时",
-                    "达标天数": sleep_compliant_days,
-                    "推荐范围": "7-9小时"
-                },
-                "心率": {
-                    "平均值": f"{avg_heart_rate:.1f} 次/分钟",
-                    "达标天数": hr_compliant_days,
-                    "推荐范围": "60-100次/分钟"
-                },
-                "呼吸频率": {
-                    "平均值": f"{avg_respiratory_rate:.1f} 次/分钟",
-                    "达标天数": rr_compliant_days,
-                    "推荐范围": "12-20次/分钟"
-                },
-                "呼吸暂停": {
-                    "平均值": f"{avg_apnea_count:.1f} 次",
-                    "达标天数": apnea_compliant_days,
-                    "推荐范围": "< 5次"
-                }
+        analysis_result_data = {
+            "sleep_duration": {
+                "average": f"{avg_sleep_duration:.1f} 小时",
+                "compliant_days": sleep_compliant_days,
+                "recommended_range": "7-9小时"
             },
-            "统计周期": f"{start_date} 至 {end_date}",
-            "总天数": len(sleep_data)
+            "heart_rate": {
+                "average": f"{avg_heart_rate:.1f} 次/分钟",
+                "compliant_days": hr_compliant_days,
+                "recommended_range": "60-100次/分钟"
+            },
+            "respiratory_rate": {
+                "average": f"{avg_respiratory_rate:.1f} 次/分钟",
+                "compliant_days": rr_compliant_days,
+                "recommended_range": "12-20次/分钟"
+            },
+            "apnea": {
+                "average": f"{avg_apnea_count:.1f} 次",
+                "compliant_days": apnea_compliant_days,
+                "recommended_range": "< 5次"
+            }
         }
         
-        return {
-            "success": True,
-            "data": response_data,
-            "has_data": True
+        # 构建 AnalysisResult 对象
+        analysis_result = AnalysisResult(
+            sleep_duration=MetricAnalysis(**analysis_result_data['sleep_duration']),
+            heart_rate=MetricAnalysis(**analysis_result_data['heart_rate']),
+            respiratory_rate=MetricAnalysis(**analysis_result_data['respiratory_rate']),
+            apnea=MetricAnalysis(**analysis_result_data['apnea'])
+        )
+        
+        # 构建响应数据
+        data = WeeklyMonthlyAnalysisData(
+            ai_summary=ai_summary,
+            analysis_result=analysis_result,
+            statistical_period=f"{start_date} 至 {end_date}",
+            total_days=len(sleep_data)
+        )
+        
+        # 存储分析结果到新表
+        from src.db.database import get_db_manager
+        db_manager = get_db_manager()
+        
+        # 构建分析结果字典
+        analysis_result_dict = {
+            "sleep_duration": {
+                "average": f"{avg_sleep_duration:.1f} 小时",
+                "compliant_days": sleep_compliant_days,
+                "recommended_range": "7-9小时"
+            },
+            "heart_rate": {
+                "average": f"{avg_heart_rate:.1f} 次/分钟",
+                "compliant_days": hr_compliant_days,
+                "recommended_range": "60-100次/分钟"
+            },
+            "respiratory_rate": {
+                "average": f"{avg_respiratory_rate:.1f} 次/分钟",
+                "compliant_days": rr_compliant_days,
+                "recommended_range": "12-20次/分钟"
+            },
+            "apnea": {
+                "average": f"{avg_apnea_count:.1f} 次",
+                "compliant_days": apnea_compliant_days,
+                "recommended_range": "< 5次"
+            }
         }
+        
+        # 存储分析结果
+        db_manager.store_weekly_monthly_analysis(
+            analysis_type=data_type,
+            start_date=start_date,
+            end_date=end_date,
+            device_sn=device_sn,
+            ai_summary=ai_summary,
+            analysis_result=analysis_result_dict
+        )
+        
+        print(f"✅ 分析结果已存储到 weekly_monthly_analysis 表")
+        
+        return WeeklyMonthlyAnalysisResponse(
+            success=True,
+            data=data,
+            has_data=True
+        )
         
     except Exception as e:
         print(f"❌ 周度/月度分析失败: {str(e)}")
         print(traceback.format_exc())
         
-        return {
-            "success": False,
-            "error": str(e),
-            "message": "周度/月度分析失败"
-        }
+        return WeeklyMonthlyAnalysisResponse(
+            success=False,
+            data=None,
+            has_data=False,
+            error=str(e)
+        )
 
 
 
@@ -1979,6 +2092,7 @@ async def weekly_or_monthly_analysis(data_type: str = Body(..., description="数
 
 def run_scheduler():
     """运行调度器，在后台执行定时任务"""
+    import schedule
     def scheduled_analysis():
         """执行定时分析任务 - 仅在无缓存时生成"""
         try:

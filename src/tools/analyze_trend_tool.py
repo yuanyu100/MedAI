@@ -66,24 +66,24 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                 # 最近30天
                 start_date = (datetime.now() - timedelta(days=29)).strftime('%Y-%m-%d')
         
-        print(f"📅 分析日期范围: {start_date} 到 {end_date}")
-        print(f"📊 数据类型: {data_type}")
-        print(f"🔧 设备序列号: {device_sn}")
+        print(f"📅 Analysis date range: {start_date} to {end_date}")
+        print(f"📊 Data type: {data_type}")
+        print(f"🔧 Device serial number: {device_sn}")
         
         # 从数据库获取真实数据
-        print(f"🔗 连接数据库，获取 {start_date} 到 {end_date} 的睡眠数据")
+        print(f"🔗 Connecting to database, retrieving sleep data from {start_date} to {end_date}")
         db_manager = DatabaseManager()
         sleep_data_df = db_manager.get_calculated_sleep_data_for_date_range(start_date, end_date, device_sn)
         
-        print(f"📊 数据库查询结果行数: {len(sleep_data_df)}")
+        print(f"📊 Database query result rows: {len(sleep_data_df)}")
         if not sleep_data_df.empty:
-            print(f"📋 前5行数据:")
+            print(f"📋 First 5 rows of data:")
             print(sleep_data_df.head())
         
         # 检查数据是否为空
         if sleep_data_df.empty:
             # 如果没有数据，返回明确的错误信息
-            print(f"⚠️ 没有找到指定日期范围内的睡眠数据")
+            print(f"⚠️ No sleep data found for the specified date range")
             result = {
                 "success": False,
                 "error": "No sleep data found",
@@ -91,14 +91,14 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                     "type": data_type,
                     "start_date": start_date,
                     "end_date": end_date,
-                    "message": "没有找到指定日期范围内的睡眠数据，请先执行睡眠分析生成数据"
+                    "message": "No sleep data found for the specified date range. Please perform sleep analysis first to generate data"
                 }
             }
             return json.dumps(result, ensure_ascii=False, indent=2)
         
         # 将DataFrame转换为字典列表
         sleep_data = sleep_data_df.to_dict('records')
-        print(f"🔄 转换为字典列表，长度: {len(sleep_data)}")
+        print(f"🔄 Converted to dictionary list, length: {len(sleep_data)}")
         
         # 处理数据，构建周/月数据
         if data_type == "week":
@@ -110,12 +110,12 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                 sleep_data.sort(key=lambda x: x['date'])
             except Exception as e:
                 # 如果排序失败，尝试使用字符串排序
-                print(f"⚠️ 排序失败: {e}")
+                print(f"⚠️ Sorting failed: {e}")
                 try:
                     sleep_data.sort(key=lambda x: str(x['date']))
                 except Exception as e2:
                     # 如果再次失败，不排序
-                    print(f"⚠️ 再次排序失败: {e2}")
+                    print(f"⚠️ Sorting failed again: {e2}")
             
             for item in sleep_data:
                 # 处理日期字段，确保它是字符串
@@ -132,19 +132,17 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                         date_obj = datetime.strptime(date_str, '%Y-%m-%d')
                 except Exception as e:
                     # 如果转换失败，使用当前日期
-                    print(f"⚠️ 日期转换失败: {e}")
+                    print(f"⚠️ Date conversion failed: {e}")
                     date_str = datetime.now().strftime('%Y-%m-%d')
                     date_obj = datetime.now()
                 
                 day_name = date_obj.strftime('%a')  # 周几的缩写
-                day_name_cn = _get_chinese_weekday(date_obj.weekday())  # 中文周几
                 
                 # 构建当天数据
                 total_sleep_minutes = float(item.get('sleep_duration_minutes', 0))
                 daily_data = {
                     "date": date_str,
                     "day": day_name,
-                    "day_cn": day_name_cn,
                     "total_sleep_hours": round(total_sleep_minutes / 60, 2),  # 保留两位小数
                     "total_sleep_minutes": int(total_sleep_minutes),  # 转换为分钟
                     "sleep_score": int(item.get('sleep_score', 0)),
@@ -188,12 +186,12 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                 sleep_data.sort(key=lambda x: x['date'])
             except Exception as e:
                 # 如果排序失败，尝试使用字符串排序
-                print(f"⚠️ 排序失败: {e}")
+                print(f"⚠️ Sorting failed: {e}")
                 try:
                     sleep_data.sort(key=lambda x: str(x['date']))
                 except Exception as e2:
                     # 如果再次失败，不排序
-                    print(f"⚠️ 再次排序失败: {e2}")
+                    print(f"⚠️ Sorting failed again: {e2}")
             
             # 将睡眠数据转换为字典，键为日期字符串
             sleep_data_dict = {}
@@ -211,7 +209,7 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                     sleep_data_dict[date_str] = item
                 except Exception as e:
                     # 如果转换失败，跳过
-                    print(f"⚠️ 日期转换失败: {e}")
+                    print(f"⚠️ Date conversion failed: {e}")
             
             # 生成日期范围内的所有日期
             start_date_obj = datetime.strptime(start_date, '%Y-%m-%d')
@@ -280,14 +278,14 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
                 }
             }
         
-        print(f"✅ 数据处理完成，返回结果")
-        print(f"📤 返回数据长度: {len(sleep_data)}")
+        print(f"✅ Data processing completed, returning result")
+        print(f"📤 Return data length: {len(sleep_data)}")
         
         # 返回结果
         return json.dumps(result, ensure_ascii=False, indent=2)
         
     except Exception as e:
-        error_message = f"分析数据库周/月数据时出错: {str(e)}"
+        error_message = f"Error analyzing weekly/monthly data from database: {str(e)}"
         print(error_message)
         import traceback
         traceback.print_exc()
@@ -295,7 +293,7 @@ def analyze_trend_from_database(data_type: str = "week", device_sn: str = None, 
         error_response = {
             "success": False,
             "error": error_message,
-            "message": "分析数据库周/月数据失败，请检查数据库连接和数据格式"
+            "message": "Failed to analyze weekly/monthly data from database. Please check database connection and data format"
         }
         # 返回错误响应
         return json.dumps(error_response, ensure_ascii=False, indent=2)

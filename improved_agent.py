@@ -480,7 +480,7 @@ def get_cached_analysis(query: str, date: str):
         return None
 
 
-def run_improved_agent(date: str, thread_id: str = "default-session", force_refresh: bool = False, include_formatted_time: bool = False, formatted_time_input: str = None, config_file_path: str = None, device_sn: str = None, custom_prompt: str = None):
+def run_improved_agent(date: str, thread_id: str = "default-session", force_refresh: bool = False, include_formatted_time: bool = False, formatted_time_input: str = None, config_file_path: str = None, device_sn: str = None, custom_prompt: str = None, save_to_database: bool = True):
     """
     运行改进版智能体，支持缓存和结果保存
     """
@@ -719,6 +719,7 @@ def run_improved_agent(date: str, thread_id: str = "default-session", force_refr
     logger.debug(f"Final result: {final_result[:200]}...")  # 只记录前200个字符
     
     # 保存分析结果到数据库（异步）
-    save_analysis_result_async(query, final_result, date)
+    if save_to_database:
+        save_analysis_result_async(query, final_result, date)
     
     return final_result
